@@ -1,0 +1,7 @@
+UtaWeave (歌织)
+Copyright 2026 UtaWeave contributors
+
+Pipeline and compatibility adapters for VocalRender, Vocal2Midi, RomajiASR,
+TiFA, GAME, Qwen3-ASR, SingMOS and externally configured SingCrawl separation.
+Upstream code and assets retain their original notices and licenses.
+See THIRD_PARTY_NOTICES.md and manifests/upstreams.lock.json.

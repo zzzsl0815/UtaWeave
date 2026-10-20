@@ -1,0 +1,22 @@
+{
+  "score": "../runs/target-score/score.vr.json",
+  "reference_run": "../runs/voice-reference",
+  "stems": "../runs/target/stems",
+  "checkpoint": "../weights/ja-r64-e5",
+  "base_model": "../models/VocalRender-Pro",
+  "vocalrender_repo": "../vendor/VocalRender",
+  "tifa_repo": "../vendor/TIFA",
+  "tifa_weights": "../models/TIFA-1.0-ST",
+  "render_python": "../.venv-render/bin/python",
+  "align_python": "../.venv-labeling/bin/python",
+  "ffmpeg": "ffmpeg",
+  "batch_size": 4,
+  "whole_lines": true,
+  "seed": 20261020,
+  "expected_lora_tensors": 384,
+  "lora_scales": {
+    "base_lm": 1.0,
+    "residual_lm": 1.0,
+    "feat_decoder.estimator": 0.5
+  }
+}

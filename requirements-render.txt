@@ -1,0 +1,17 @@
+# Install matching CUDA torch/torchaudio first; use pinned vendor/VocalRender.
+numpy>=1.26,<2
+soundfile>=0.12
+scipy>=1.10
+librosa
+PyYAML
+safetensors
+transformers==4.57.6
+einops
+datasets>=3,<4
+huggingface-hub
+pydantic>=2.11,<3
+tqdm
+argbind
+accelerate
+tensorboard
+

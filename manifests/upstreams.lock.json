@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "upstreams": [
+    {
+      "name": "VocalRender",
+      "url": "https://github.com/pymaster17/VocalRender.git",
+      "revision": "be68f0c664c4840ddd37aef8a241ccbc794b27bf",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "Vocal2Midi",
+      "url": "https://github.com/Xiantaidu/Vocal2Midi.git",
+      "revision": "f589c183ec9a4b25ea234459b8a4b72ba993af50",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "RomajiASR",
+      "url": "https://github.com/Xiantaidu/RomajiASR.git",
+      "revision": "0df075c85ddc9b9df9c249935c6bd1702de6c420",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "TIFA",
+      "url": "https://github.com/openvpi/TIFA.git",
+      "revision": "614a277d2580efe5e4b84faf4c34753dbc5a062c",
+      "license": "MIT"
+    },
+    {
+      "name": "SingMOS",
+      "url": "https://github.com/South-Twilight/SingMOS.git",
+      "revision": "e55cf0713d487731ddf1661068a1aa0995e00337",
+      "license": "MIT"
+    },
+    {
+      "name": "SingCrawl",
+      "url": "https://github.com/pymaster17/SingCrawl.git",
+      "revision": "4abbb9c7c48bf42cc294711f656b42d3c14dd145",
+      "license": "See upstream per component; MSST-WebUI is AGPL-3.0"
+    }
+  ]
+}

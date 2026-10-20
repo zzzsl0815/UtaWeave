@@ -1,0 +1,12 @@
+{
+  "python": "/path/to/reference-env/bin/python",
+  "msst_root": "/path/to/UtaWeave/vendor/SingCrawl/MSST-WebUI",
+  "separator_config": "/path/to/big_beta6x.yaml",
+  "separator_weights": "/path/to/big_beta6x.ckpt",
+  "dereverb_config": "/path/to/dereverb.yaml",
+  "dereverb_weights": "/path/to/dereverb.ckpt",
+  "singmos_repo": "/path/to/UtaWeave/vendor/SingMOS",
+  "singmos_weights": "/path/to/singmos_pro.pth",
+  "singmos_ssl": "/path/to/wav2vec_vox_new.pt",
+  "ffmpeg": "ffmpeg"
+}

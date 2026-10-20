@@ -1,0 +1,34 @@
+{
+  "version": "0.1.0",
+  "date": "2026-10-20",
+  "test_suite": {
+    "tests": 64,
+    "passed": true,
+    "upstream_integration_included": true
+  },
+  "render_smoke": {
+    "chunks": 16,
+    "lyric_units": 269,
+    "source_seconds": 216.18666666666667,
+    "exports": [
+      "mix",
+      "vocal",
+      "natural"
+    ],
+    "remaining_alignment_flags": 0,
+    "decoded_generated_waveforms_identical_to_previous_baseline": 16,
+    "container_file_hashes_may_differ_due_to_float_wav_metadata": true,
+    "listening_quality_certified": false
+  },
+  "reference_scoring_smoke": {
+    "candidates": 2,
+    "finite_scores": true
+  },
+  "wheel_build": true,
+  "original_adapter_tensor_bytes_preserved": true,
+  "unverified": [
+    "Fresh-machine full GPU dependency installation",
+    "Mixed English recognition/pronunciation quality",
+    "Exact local Kashi bundle release correspondence"
+  ]
+}

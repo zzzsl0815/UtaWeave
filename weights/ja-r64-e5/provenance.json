@@ -1,0 +1,12 @@
+{
+  "base_model": "pymaster/VocalRender",
+  "base_subfolder": "VocalRender-Pro",
+  "base_revision": "c2ba9d06f39fa0731b96f0258d3df33cc1bda35a",
+  "training_step": 47934,
+  "epoch": 5,
+  "rank": 64,
+  "original_weight_sha256": "6fc857cf8efc691888272d8858a78bb3cedcee43a12f8d59883ea73e1957a241",
+  "original_config_sha256": "4806d6f51b734ec596b12961121d0d5f76a4876cbf550b6d187f9909a049a31b",
+  "packaging_change": "Only base_model path in lora_config.json changed to a portable identifier. Tensor bytes unchanged.",
+  "inference_only": true
+}

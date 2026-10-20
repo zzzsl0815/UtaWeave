@@ -1,0 +1,19 @@
+{
+  "upstream_repo": "/path/to/UtaWeave/vendor/Vocal2Midi",
+  "romaji_model": "/path/to/RomajiASR-v1.0.0",
+  "qwen_model": "/path/to/Qwen3-ASR-1.7B",
+  "kashi_model": "/path/to/kashi-g2p-onnx",
+  "tifa_model": "/path/to/TIFA-1.0-ST-onnx",
+  "game_model": "/path/to/GAME-1.0.3-medium-onnx",
+  "audio": "/path/to/separated_vocal.wav",
+  "song_id": "local-song",
+  "language": "ja",
+  "bpm": 120,
+  "out": "/path/to/annotation-run",
+  "cpu_threads": 4,
+  "slice_max_sec": 10,
+  "ts": [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875],
+  "seg_threshold": 0.2,
+  "seg_radius": 0.02,
+  "est_threshold": 0.2
+}

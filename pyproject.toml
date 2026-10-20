@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utaweave"
+version = "0.1.0"
+description = "Audio-to-score-to-singing tools for Japanese song revoicing"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+audio = ["numpy>=1.26,<2", "soundfile>=0.12", "scipy>=1.10"]
+dev = ["build"]
+
+[project.scripts]
+utaweave = "song2voice.cli:main"
+song2voice = "song2voice.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

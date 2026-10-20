@@ -1,0 +1,63 @@
+{
+  "note": "Observed runtime versions, not a complete dependency lock.",
+  "environments": {
+    "render": {
+      "python": "3.12.3",
+      "packages": {
+        "torch": "2.8.0+cu128",
+        "torchaudio": "2.8.0+cu128",
+        "numpy": "2.3.2",
+        "scipy": "1.18.1",
+        "soundfile": "0.14.0",
+        "librosa": "1.0.0",
+        "transformers": "5.0.0",
+        "qwen-asr": "0.0.6",
+        "onnxruntime": "1.31.0",
+        "pydantic": "2.14.0",
+        "safetensors": "0.8.0"
+      }
+    },
+    "labeling_and_separation": {
+      "python": "3.12.3",
+      "packages": {
+        "torch": "2.8.0+cu128",
+        "torchaudio": "2.8.0+cu128",
+        "numpy": "1.26.4",
+        "scipy": "1.13.1",
+        "soundfile": "0.14.0",
+        "librosa": "0.10.2.post1",
+        "transformers": "4.57.6",
+        "qwen-asr": "0.0.6",
+        "onnxruntime": "1.31.0",
+        "pydantic": "2.14.0",
+        "s3prl": "0.4.18",
+        "safetensors": "0.8.0",
+        "g2pflow": "0.3.1",
+        "loguru": "0.7.3",
+        "omegaconf": "2.3.0"
+      }
+    },
+    "onnx_export": {
+      "python": "3.12.3",
+      "packages": {
+        "torch": "2.8.0+cu128",
+        "torchaudio": "2.8.0+cu128",
+        "numpy": "1.26.4",
+        "scipy": "1.13.1",
+        "soundfile": "0.14.0",
+        "librosa": "0.10.2.post1",
+        "transformers": "4.57.6",
+        "qwen-asr": "0.0.6",
+        "onnxruntime": "1.31.0",
+        "pydantic": "2.14.0",
+        "onnx": "1.19.1",
+        "onnxslim": "0.1.98",
+        "s3prl": "0.4.18",
+        "safetensors": "0.8.0",
+        "g2pflow": "0.3.1",
+        "loguru": "0.7.3",
+        "omegaconf": "2.3.0"
+      }
+    }
+  }
+}

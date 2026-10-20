@@ -1,0 +1,10 @@
+# Additional TiFA PyTorch backend and ONNX export dependencies.
+-r requirements-labeling.txt
+einops>=0.7
+pydantic>=2.11,<3
+g2pflow>=0.3,<0.4
+loguru
+omegaconf
+onnx>=1.18
+onnxslim
+onnxscript

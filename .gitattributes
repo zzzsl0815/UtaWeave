@@ -1,0 +1,4 @@
+weights/*/lora_weights.safetensors filter=lfs diff=lfs merge=lfs -text
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf

@@ -1,0 +1,47 @@
+{
+  "base_model": "pymaster/VocalRender:VocalRender-Pro",
+  "rank": 64,
+  "alpha": 128,
+  "dropout": 0.05,
+  "modules": [
+    "base_lm",
+    "residual_lm",
+    "feat_decoder.estimator"
+  ],
+  "target_layers": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj"
+  ],
+  "frozen": [
+    "projection",
+    "local_encoder",
+    "AudioVAE"
+  ],
+  "epochs": 5,
+  "optimizer_updates": 47935,
+  "checkpoint_step": 47934,
+  "train_clips": 76692,
+  "train_hours": 102.14004515621062,
+  "validation_clips": 9297,
+  "learning_rate_lm": 5e-05,
+  "learning_rate_dit": 5e-06,
+  "warmup_steps": 2397,
+  "scheduler": "cosine",
+  "stop_loss_coefficient": 0.1,
+  "diff_loss_coefficient": 1.0,
+  "batch_size_cap": 8,
+  "max_batch_tokens": 4096,
+  "gradient_accumulation": 1,
+  "prompt_audio_prob": 1.0,
+  "prompt_max_frames": 50,
+  "reference_target_seconds": [
+    6,
+    8
+  ],
+  "precision": "fp32 parameters, bf16 autocast",
+  "human_annotated": false,
+  "independent_acoustic_label_check": false,
+  "training_label_policy": "reference-romaji-audited; differs from current audio-only inference labeling"
+}

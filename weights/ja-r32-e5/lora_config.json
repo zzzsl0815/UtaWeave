@@ -1,0 +1,30 @@
+{
+  "base_model": "pymaster/VocalRender:VocalRender-Pro",
+  "lora_config": {
+    "enable_lm": true,
+    "enable_dit": true,
+    "enable_proj": false,
+    "r": 32,
+    "alpha": 64,
+    "dropout": 0.05,
+    "target_modules_lm": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ],
+    "target_modules_dit": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ],
+    "target_proj_modules": [
+      "enc_to_lm_proj",
+      "lm_to_dit_proj",
+      "res_to_dit_proj",
+      "fusion_concat_proj"
+    ]
+  },
+  "svs_enabled": true
+}
