@@ -21,4 +21,3 @@ song2voice = "song2voice.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

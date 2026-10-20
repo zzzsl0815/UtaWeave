@@ -81,4 +81,3 @@ def load_model(checkpoint):
         raise ValueError(f'Expected {expected} LoRA tensors, got {len(loaded)}')
     model.set_lora_enabled(True)
     return model, configure_lora(model)
-
