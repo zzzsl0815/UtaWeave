@@ -31,12 +31,22 @@ class PhraseEditTests(unittest.TestCase):
         with patch('song2voice.web.workflow.g2p',return_value=dict(lines=[reading('アオ')])):realign({},self.job,request)
         result=json.loads((self.job/'prepared.json').read_text())
         self.assertEqual(result['labels'][4:],request['labels'][4:])
+        self.assertEqual(result['labels'][0],'イイ')
+        self.assertIn(0,result['alignment']['phrases'][0]['preserved_note_indices'])
         self.assertNotEqual(result['revision'],'original')
         self.assertEqual(result['notes'],self.data['notes'])
         self.assertEqual(result['alignment']['phrases'][0]['reading'],'ア オ')
         backup=json.loads(next((self.job/'alignment-history').glob('*.json')).read_text())
         self.assertEqual(backup['labels'],request['labels'])
         with self.assertRaisesRegex(ValueError,'版本过期'):realign({},self.job,request)
+
+    def test_reapplying_phrase_keeps_previously_saved_manual_note_edits(self):
+        self.data['labels'][1]='オオ'
+        (self.job/'prepared.json').write_text(json.dumps(self.data))
+        request=self.request();request['labels']=self.data['labels']
+        with patch('song2voice.web.workflow.g2p',return_value=dict(lines=[reading('アオ')])):realign({},self.job,request)
+        result=json.loads((self.job/'prepared.json').read_text())
+        self.assertEqual(result['labels'][1],'オオ')
 
     def test_invalid_ranges_and_empty_reading_leave_original_score_untouched(self):
         for values in [dict(note_start=-1),dict(note_end=7),dict(reading=''),dict(note_end=0),dict(phrase_id=99)]:

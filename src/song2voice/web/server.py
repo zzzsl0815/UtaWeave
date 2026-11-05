@@ -19,6 +19,7 @@ from ..selection import atomic_json
 from ..midi_score import inspect_midi, require_edited_mapping
 from ..netease import fetch_lyrics, song_id_from_url
 from .workflow import read, load_config, asset, export_lyric_midi, require_score_revision
+from .drafts import save_draft, list_drafts
 
 LOCK=threading.Lock()
 STATIC=Path(__file__).with_name('static')
@@ -81,6 +82,7 @@ class Handler(ReportHandler):
     def send_json(self,value,code=200):
         raw=json.dumps(value,ensure_ascii=False,allow_nan=False).encode()
         self.send_response(code);self.send_header('Content-Type','application/json; charset=utf-8')
+        self.send_header('Cache-Control','no-store')
         self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
 
     def translate_path(self,path):
@@ -109,6 +111,11 @@ class Handler(ReportHandler):
             if path=='/api/jobs':
                 jobs=sorted((self.workspace/'jobs').glob('*/status.json'),key=lambda p:p.stat().st_mtime,reverse=True)
                 self.send_json([status(p.parent) for p in jobs[:30]]);return
+            draft_match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/drafts(?:/([a-f0-9]{32}))?',path)
+            if draft_match:
+                job=self.workspace/'jobs'/identifier(draft_match[1])
+                if not (job/'prepared.json').exists():raise ValueError('请先完成乐谱准备')
+                self.send_json(read(job/'drafts'/(draft_match[2]+'.json')) if draft_match[2] else list_drafts(job));return
             match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})(/log)?',path)
             if match:
                 job=self.workspace/'jobs'/identifier(match[1])
@@ -177,7 +184,7 @@ class Handler(ReportHandler):
                     job=self.workspace/'jobs'/uuid.uuid4().hex;job.mkdir()
                     atomic_json(job/'request.json',request);launch(self.config,job,'prepare')
                     self.send_json(dict(id=job.name));return
-                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi|align)',path)
+                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi|align|draft)',path)
                 if not match:raise ValueError('Unknown action')
                 job=self.workspace/'jobs'/identifier(match[1]);action=match[2]
                 if action=='cancel':
@@ -188,6 +195,9 @@ class Handler(ReportHandler):
                     self.send_json(dict(ok=True));return
                 if action=='retry':launch(self.config,job,'prepare');self.send_json(dict(ok=True));return
                 if not (job/'prepared.json').exists():raise ValueError('请先完成乐谱准备')
+                if action=='draft':
+                    # Old tabs keep their own branch even after score realignment.
+                    self.send_json(save_draft(job,request));return
                 prepared=read(job/'prepared.json');require_score_revision(prepared,request)
                 if action=='align':
                     if alive(job):raise ValueError('任务正在执行，请等待或先停止')

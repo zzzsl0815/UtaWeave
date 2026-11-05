@@ -2,16 +2,26 @@
 const $ = id => document.getElementById(id);
 let mode = 'song', uploads = {}, current = null, prepared = null, labels = [], loadedJob = null, busy = false;
 let audioContext = null, oscillators = [], pollTimer, melodyTimer;
-let phraseDrafts = new Map(), phraseJob = null, pendingAlignment = null;
+let phraseDrafts = new Map(), phraseJob = null, pendingAlignment = null, alignmentSubmitting=false;
 let readingInputMode='romaji', readingEditors=[];
+let restoringDraft=false, draftChoices=[], pollSerial=0, draftLoadSerial=0, deferredRevision=null;
+const draftStore=new EditorDraftStore({capture:captureDraft,report:(job,text,unsafe)=>{
+  if(job===current){$('draft-status').textContent=text;$('draft-status').classList.toggle('reading-error',unsafe);}
+}});
 const stageNames = {queued:'排队中',input:'读取输入',lyrics:'转换读音',separate:'分离人声',annotate:'自动转谱',review:'等待核对乐谱',score:'检查乐谱',reference:'准备音色参考',render:'生成演唱',complete:'生成完成',error:'任务失败',stopped:'任务已停止'};
 const statusNames = {queued:'排队中',running:'进行中',awaiting_score:'待核对',complete:'已完成',failed:'失败',cancelled:'已停止'};
-function notice(message) { $('notice').textContent = message || ''; $('notice').hidden = !message; }
+function notice(message) {
+  $('notice').textContent=message||'';$('notice').hidden=!message;
+  if(message){const close=document.createElement('button');close.textContent='×';close.className='notice-close';close.setAttribute('aria-label','关闭提示');close.onclick=()=>notice('');$('notice').append(close);}
+}
 async function api(path, data) {
-  const response = await fetch(path, data === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-UtaWeave':'local'},body:JSON.stringify(data)});
-  const result = await response.json();
-  if (!response.ok) throw Error(result.error || `请求失败 (${response.status})`);
-  return result;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const response=await fetch(path,{signal:controller.signal,cache:'no-store',...(data===undefined?{}:
+      {method:'POST',headers:{'Content-Type':'application/json','X-UtaWeave':'local'},body:JSON.stringify(data)})});
+    const result=await response.json();if(!response.ok)throw Error(result.error||`请求失败 (${response.status})`);return result;
+  }catch(error){if(error.name==='AbortError')throw Error('请求超时。请检查连接；操作可能已被后台接收，请先查看任务状态。');throw error;}
+  finally{clearTimeout(timer);}
 }
 async function action(fn, button) {
   notice(''); if (button) button.disabled = true;
@@ -45,7 +55,7 @@ for (const key of ['source','midi','accompaniment','reference']) {
       const first = data.midi.tracks.find(t => !t.polyphonic); if (first) $('midi-track').value = first.index;
       else throw Error('没有可用的单声部旋律轨，请在 MIDI 编辑器中分离主旋律。');
     }
-    if (key === 'reference') { $('reference-local-player').src = `/uploads/${data.id}`; $('reference-local-player').hidden = false; }
+    if (key === 'reference') { $('reference-local-player').src = `/uploads/${data.id}`; $('reference-local-player').hidden = false;saveEditorDraft(); }
   }));
 }
 $('fetch-lyrics').addEventListener('click',() => action(async () => {
@@ -56,6 +66,7 @@ $('fetch-lyrics').addEventListener('click',() => action(async () => {
   $('lyrics-text').value = data.original;
 },$('fetch-lyrics')));
 $('prepare').addEventListener('click',() => action(async () => {
+  saveEditorDraft();
   const request = {mode,lyrics_text:$('lyrics-text').value,lyrics_url:$('lyrics-url').value.trim(),bpm:Number($('bpm').value)};
   if (mode === 'midi') {
     if (!uploads.midi) throw Error('请先上传 MIDI。');
@@ -76,7 +87,7 @@ function updateReference() {
 $('reference-mode').addEventListener('change',updateReference);
 function format(seconds) { return `${Math.floor(seconds/60)}:${(seconds%60).toFixed(2).padStart(5,'0')}`; }
 function pitchName(p) { return p ? ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'][p%12] + (Math.floor(p/12)-1) : '未知'; }
-function showRomaji(node,reading,needsReadingHint='含汉字时，请保存本句以更新读音') {
+function showRomaji(node,reading,needsReadingHint='含汉字时，请应用本句以更新读音') {
   const result=romanizeReading(reading);
   node.textContent=`罗马音：${result.text || '—'}${result.needsReading?' · '+needsReadingHint:''}`;
 }
@@ -84,7 +95,7 @@ function readingInputHelp(){
   $('reading-input-help').textContent=readingInputMode==='romaji'?"直接输入 kimi、gakkou 等罗马音，可按拍音加空格。英文用 {tick tack} 包住。n' 明确表示 ん，xtsu 表示小 っ；单个音符仍可填 SP 或 -。下方预览是实际使用的读音。":"按原方式输入日文或英文；字母按英文处理。需要用罗马音输入日语时，请切换上方模式。";
 }
 function createReadingEditor(input,preview,value,{kind,onEdit,onPreview,state}={}){
-  const editor={kind,canonical:value,error:'',mode:readingInputMode};
+  const editor={kind,id:input.id,canonical:value,error:'',mode:readingInputMode};
   const render=()=>{
     input.setCustomValidity(editor.error);input.setAttribute('aria-invalid',String(!!editor.error));
     preview.textContent=editor.error || `将使用：${editor.canonical || '—'}`;preview.classList.toggle('reading-error',!!editor.error);
@@ -110,7 +121,7 @@ function createReadingEditor(input,preview,value,{kind,onEdit,onPreview,state}={
   readingEditors.push(editor);return editor;
 }
 function requireNoteReadings(){
-  const invalid=readingEditors.find(e=>e.kind==='note'&&e.error);if(invalid)throw Error('有音符的罗马音拼写尚未完成：'+invalid.error);
+  const invalid=readingEditors.find(e=>e.kind==='note'&&e.error);if(invalid){focusNote(Number(invalid.id.slice(5)));throw Error('有音符的罗马音拼写尚未完成：'+invalid.error);}
 }
 $('reading-input-mode').onchange=()=>{
   const value=$('reading-input-mode').value;
@@ -118,6 +129,7 @@ $('reading-input-mode').onchange=()=>{
   readingInputMode=value;readingEditors.forEach(e=>e.setMode(value));
   for(const draft of phraseDrafts.values())delete draft.inputState;
   readingInputHelp();
+  saveEditorDraft();
 };
 readingInputHelp();
 function mappingStatus() {
@@ -154,9 +166,11 @@ $('piano-roll').addEventListener('click',e => {
   focusNote(best);
 });
 window.addEventListener('resize',()=>drawRoll());
-function showPrepared(data, saved) {
+function showPrepared(data, saved, draft=null) {
   readingEditors=[];
-  prepared=data;labels=[...(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels)];setMode(data.mode);
+  prepared=data;labels=[...(draft?.labels||(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels))];setMode(data.mode);
+  if(draft){readingInputMode=draft.reading_mode;phraseJob=current;phraseDrafts=new Map(draft.phrase_drafts);}
+  $('reading-input-mode').value=readingInputMode;readingInputHelp();
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
   $('score-summary').replaceChildren();
   for (const text of [`${data.notes.length} 个${data.mode==='midi'?'音符':'歌词单元'}`,`${data.bpm.toFixed(1)} BPM`,`${data.notes.at(-1).end.toFixed(1)} 秒`]) {
@@ -175,19 +189,32 @@ function showPrepared(data, saved) {
     const cell=document.createElement('td'),input=document.createElement('input');input.id=`note-${i}`;input.value=labels[i];input.maxLength=64;input.setAttribute('aria-label',`第 ${i+1} 个音符的歌词读音`);
     const romaji=element('div',undefined,'romaji-text note-romaji');romaji.id=`note-romaji-${i}`;
     const preview=element('div',undefined,'reading-preview note-preview');preview.id=`note-preview-${i}`;input.setAttribute('aria-describedby',`${preview.id} ${romaji.id}`);
-    createReadingEditor(input,preview,labels[i],{kind:'note',onPreview:value=>showRomaji(romaji,value,'请填写假名读音'),onEdit:editor=>{labels[i]=editor.canonical;row.classList.toggle('missing',!labels[i]||!!editor.error);$('confirmed').checked=false;mappingStatus();}});
+    createReadingEditor(input,preview,labels[i],{kind:'note',state:draft?.note_states?.[input.id],onPreview:value=>showRomaji(romaji,value,'请填写假名读音'),onEdit:editor=>{labels[i]=editor.canonical;row.classList.toggle('missing',!labels[i]||!!editor.error);$('confirmed').checked=false;mappingStatus();}});
     input.addEventListener('focus',()=>{document.querySelectorAll('#note-rows tr').forEach(r=>r.classList.remove('selected'));row.classList.add('selected');drawRoll(i);});
     input.addEventListener('keydown',e=>{if(e.key==='Enter'){$(`note-${i+1}`)?.focus();e.preventDefault();}});
     cell.append(input,preview,romaji);row.append(cell);$('note-rows').append(row);
   });
   if(saved){$('seed-steps').value=saved.steps;$('seed-cfg').value=saved.cfg;$('reference-mode').value=saved.reference.mode;$('reference-url').value=saved.reference.url||'';uploads.reference=saved.reference.asset;if(uploads.reference)$('reference-local-player').src=`/uploads/${uploads.reference}`;updateReference();}
   showPhrases();drawRoll();mappingStatus();
+  if(draft){
+    for(const [id,value] of Object.entries(draft.fields||{})){
+      const node=$(id);if(!node||node.type==='file'||!node.closest('#review-panel,#voice-panel'))continue;
+      if(node.type==='checkbox')node.checked=Boolean(value);else node.value=String(value);
+    }
+    uploads.reference=draft.reference_asset||undefined;
+    if(uploads.reference)$('reference-local-player').src=`/uploads/${uploads.reference}`;
+    updateReference();
+    filterPhrases();
+    for(const id of draft.open_phrases||[]){const row=$(`phrase-${id}`);if(row){row.open=true;row.hidden=false;}}
+    $('confirmed').checked=false;
+  }
+  updateDraftMarkers();
 }
 $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('input-panel').scrollIntoView({behavior:'smooth'});});
-$('export-midi').onclick=()=>action(async()=>{requireNoteReadings();if(phraseDrafts.size)throw Error('请先保存修改过的乐句，再导出 MIDI。');const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();},$('export-midi'));
+$('export-midi').onclick=()=>action(async()=>{requireNoteReadings();saveEditorDraft();const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();if(phraseDrafts.size)notice(`已按当前逐音符歌词导出。${phraseDrafts.size} 句整句读音草稿尚未应用，不影响已手动调整的音符。`);},$('export-midi'));
 $('render').addEventListener('click',()=>action(async()=>{
   requireNoteReadings();
-  if(phraseDrafts.size)throw Error('请先保存修改过的乐句，再生成演唱。');
+  if(phraseDrafts.size){focusPendingPhrase();throw Error('有整句读音草稿尚未应用，请检查标记的句子。备份状态见“保存草稿”区域；应用本句会保留手动修改的音符。');}
   if(!$('confirmed').checked)throw Error('请核对歌词和音符对应，并勾选确认。');
   if(labels.some(x=>!x.trim()))throw Error('请补齐空白音符；延音填 -，不演唱的音符填 SP。');
   if(prepared.alignment?.unassigned_units>0)throw Error('仍有整句读音未分配，请先按句修正并重新分配。');
@@ -199,7 +226,7 @@ $('render').addEventListener('click',()=>action(async()=>{
   $('result-panel').hidden=true;await poll();
 },$('render')));
 function updateTask(state) {
-  busy=['queued','running'].includes(state.status);document.querySelector('aside').classList.toggle('busy',busy);
+  busy=alignmentSubmitting||['queued','running'].includes(state.status);document.querySelector('aside').classList.toggle('busy',busy);
   $('task-title').textContent=stageNames[state.stage]||state.status;
   let message=state.message;
   if(state.pipeline_stages){const active=Object.entries(state.pipeline_stages).find(([,v])=>v==='running');if(active)message+=` · ${active[0]}`;}
@@ -218,16 +245,25 @@ function updateTask(state) {
 }
 async function poll() {
   clearTimeout(pollTimer);
+  const serial=++pollSerial,job=current;
   try {
     if(current){
       const data=await api(`/api/jobs/${current}`);
+      if(serial!==pollSerial||job!==current)return;
       const revision=current+':'+(data.prepared?.revision||'');
       if(data.prepared&&loadedJob!==revision){
+        const old=prepared&&loadedJob?.startsWith(current+':')?captureDraft():null;
         const edited=pendingAlignment?.job===current&&pendingAlignment.revision!==data.prepared.revision?pendingAlignment.phrase_id:null;
+        if(old&&old.prepared_revision!==data.prepared.revision&&!pendingAlignment&&hasEditorChanges()){
+          if(deferredRevision!==revision){deferredRevision=revision;saveEditorDraft();notice('服务器上的乐谱已更新。当前编辑已保留并备份，请下载备份后重新打开任务，使用“恢复其他草稿”合并修改。');}
+          updateTask(data.status);return;
+        }
+        if(old)saveEditorDraft();
         if(edited!=null)phraseDrafts.delete(edited);
-        showPrepared(data.prepared,data.render_request);loadedJob=revision;
+        showPrepared(data.prepared,data.render_request);loadedJob=revision;deferredRevision=null;
         if(edited!=null&&$(`phrase-${edited}`)){$(`phrase-${edited}`).hidden=false;$(`phrase-${edited}`).open=true;}
         pendingAlignment=null;
+        if(old){saveEditorDraft();}else{loadEditorDrafts().catch(error=>notice('草稿恢复失败：'+error.message));}
       }
       if(['failed','cancelled'].includes(data.status.status))pendingAlignment=null;
       updateTask(data.status);
@@ -243,13 +279,13 @@ async function poll() {
       }
     }
     $('connection').textContent='本地服务已连接';
-  } catch(error){$('connection').textContent='连接暂时中断，自动重试';}
-  pollTimer=setTimeout(poll,2500);
+  } catch(error){$('connection').textContent='连接或页面更新失败：'+error.message;}
+  finally{if(serial===pollSerial)pollTimer=setTimeout(poll,2500);}
 }
 async function history(){
   try{const jobs=await api('/api/jobs');$('history-list').replaceChildren();
     if(!jobs.length){$('history-list').textContent='还没有任务';return;}
-    jobs.forEach(job=>{const button=document.createElement('button'),small=document.createElement('small');button.textContent=`${statusNames[job.status]||job.status} · ${job.id.slice(0,8)}`;small.textContent=new Date(job.created_at*1000).toLocaleString();button.append(small);button.onclick=()=>{current=job.id;loadedJob=null;prepared=null;$('result-panel').hidden=true;location.hash=`job=${current}`;poll();};$('history-list').append(button);});
+    jobs.forEach(job=>{const button=document.createElement('button'),small=document.createElement('small');button.textContent=`${statusNames[job.status]||job.status} · ${job.id.slice(0,8)}`;small.textContent=new Date(job.created_at*1000).toLocaleString();button.append(small);button.onclick=()=>{if(job.id===current)return;saveEditorDraft();current=job.id;loadedJob=null;prepared=null;phraseDrafts.clear();$('review-panel').hidden=true;$('voice-panel').hidden=true;$('result-panel').hidden=true;location.hash=`job=${current}`;poll();};$('history-list').append(button);});
   }catch(_){};
 }
 $('cancel').onclick=()=>action(async()=>{await api(`/api/jobs/${current}/cancel`,{});await poll();},$('cancel'));
@@ -270,9 +306,14 @@ $('phrase-review-only').onchange=filterPhrases;
 async function alignRequest(options){
   if(busy)throw Error('任务正在执行，请等待完成。');
   requireNoteReadings();
-  await api(`/api/jobs/${current}/align`,{...options,labels,prepared_revision:prepared.revision});
-  pendingAlignment={job:current,revision:prepared.revision,phrase_id:options.phrase_id};
-  $('confirmed').checked=false;await poll();
+  saveEditorDraft();
+  const job=current,request={...options,labels:[...labels],prepared_revision:prepared.revision};
+  alignmentSubmitting=true;busy=true;
+  document.querySelectorAll('[data-align],#phrase-list input,#phrase-list textarea,#note-rows input,#reading-input-mode').forEach(e=>e.disabled=true);
+  pendingAlignment={job,revision:prepared.revision,phrase_id:options.phrase_id};
+  try{await draftStore.flush();if(!draftStore.durable(job))throw Error('草稿备份失败，已停止重新分配。请先下载备份。');await api(`/api/jobs/${job}/align`,request);$('confirmed').checked=false;}
+  catch(error){pendingAlignment=null;throw error;}
+  finally{alignmentSubmitting=false;await poll();}
 }
 function showPhrases(){
   if(phraseJob!==current){phraseDrafts.clear();phraseJob=current;}
@@ -296,17 +337,18 @@ function showPhrases(){
     const first=element('input'),last=element('input');first.type=last.type='number';first.min=last.min=1;first.max=last.max=prepared.notes.length;first.value=draft.note_start+1;last.value=draft.note_end;
     first.id=`phrase-first-${p.id}`;last.id=`phrase-last-${p.id}`;
     for(const [name,node] of [['首音符编号',first],['尾音符编号',last]]){const label=element('label',name);label.append(node);controls.append(label);}row.append(controls);
-    const remember=()=>{phraseDrafts.set(p.id,{reading:editor.canonical,inputState:editor.snapshot(),note_start:Number(first.value)-1,note_end:Number(last.value)});$('confirmed').checked=false;};
+    const remember=()=>{phraseDrafts.set(p.id,{reading:editor.canonical,inputState:editor.snapshot(),note_start:Number(first.value)-1,note_end:Number(last.value)});$('confirmed').checked=false;updateDraftMarkers();saveEditorDraft();};
     const editor=createReadingEditor(input,preview,draft.reading,{kind:'phrase',state:draft.inputState,onEdit:remember,
       onPreview:value=>{showRomaji(romanSummary,value);showRomaji(romanDraft,value);}});
     [first,last].forEach(node=>node.addEventListener('input',remember));
-    const buttons=element('div',undefined,'inline');const apply=element('button','保存并重新分配本句','secondary');apply.type='button';apply.dataset.align='';
+    const buttons=element('div',undefined,'inline');const apply=element('button','应用本句读音 · 保留手动音符','secondary');apply.type='button';apply.dataset.align='';
+    row.append(element('p','整句修改自动保存为草稿。此按钮更新句内自动分配，已手动修改的音符会保留；无需点击它来保存逐音符修改。','hint'));
     apply.onclick=()=>action(async()=>{await alignRequest({mode:'phrase',phrase_id:p.id,reading:editor.value(),note_start:Number(first.value)-1,note_end:Number(last.value)});},apply);
     const listen=element('button','试听本句旋律','text-button');listen.type='button';listen.onclick=()=>playNotes(prepared.notes.slice(Number(first.value)-1,Number(last.value)));
     const jump=element('button','查看对应音符','text-button');jump.type='button';jump.onclick=()=>focusNote(Math.max(0,Number(first.value)-1));buttons.append(apply,listen,jump);
     if(p.units.length&&p.note_indices.length>3*p.units.length&&p.units.every(u=>u.lang==='ja')){
       const repeat=element('button','按原读音重复填满','text-button');repeat.type='button';repeat.dataset.align='';
-      repeat.onclick=()=>{const count=Number(last.value)-Number(first.value)+1;if(!Number.isInteger(count)||count<1||count>500) {notice('先填写有效的首尾音符编号（最多 500 个）。');return;}editor.setCanonical(Array.from({length:count},(_,i)=>p.units[i%p.units.length].text).join(' '));remember();notice('已生成重复读音草稿，尚未保存。仅在本句确实循环演唱这些读音时使用，请核对后保存。');};
+      repeat.onclick=()=>{const count=Number(last.value)-Number(first.value)+1;if(!Number.isInteger(count)||count<1||count>500) {notice('先填写有效的首尾音符编号（最多 500 个）。');return;}editor.setCanonical(Array.from({length:count},(_,i)=>p.units[i%p.units.length].text).join(' '));remember();notice('已生成重复读音草稿并尝试自动备份，尚未应用。仅在本句确实循环演唱这些读音时使用，请核对后应用。');};
       buttons.append(repeat);
     }
     row.append(buttons);$('phrase-list').append(row);
@@ -317,9 +359,79 @@ function showPhrases(){
   filterPhrases();
 }
 for(const [id,auto] of [['lrc-apply',false],['lrc-auto',true]])$(id).onclick=()=>action(async()=>{
-  if(phraseDrafts.size)throw Error('请先保存已修改的乐句，再重排全部音符。');
+  if(phraseDrafts.size)throw Error('请先应用修改过的整句读音，再重排全部音符。保存草稿不会执行重排。');
   if(!auto&&(!$('lrc-offset').value||!$('lrc-scale').value))throw Error('请填写偏移和比例。');
   await alignRequest({mode:'global',...(auto?{}:{offset:Number($('lrc-offset').value),scale:Number($('lrc-scale').value)})});
 },$(id));
+function captureDraft(){
+  if(!current||!prepared||!loadedJob?.startsWith(current+':'))return null;
+  const fields={};document.querySelectorAll('#review-panel input,#review-panel select,#review-panel textarea,#voice-panel input,#voice-panel select').forEach(node=>{
+    if(node.id&&node.type!=='file')fields[node.id]=node.type==='checkbox'?node.checked:node.value;
+  });
+  return {job_id:current,prepared_revision:prepared.revision,reading_mode:readingInputMode,labels:[...labels],
+    base_labels:[...prepared.labels],notes:prepared.notes.map(n=>[n.start,n.end,n.pitch]),fields,
+    note_states:Object.fromEntries(readingEditors.filter(e=>e.kind==='note').map(e=>[e.id,e.snapshot()])),
+    phrase_drafts:[...phraseDrafts],reference_asset:uploads.reference||null,
+    open_phrases:[...document.querySelectorAll('#phrase-list details[open]')].map(n=>Number(n.id.slice(7)))};
+}
+function hasEditorChanges(){return phraseDrafts.size||labels.some((x,i)=>x!==prepared.labels[i])||readingEditors.some(e=>e.error);}
+function saveEditorDraft(){if(restoringDraft)return;return draftStore.save();}
+function updateDraftMarkers(){
+  $('draft-pending').textContent=phraseDrafts.size?`${phraseDrafts.size} 句整句读音待应用；逐音符修改直接保存，无需重新分配。`:'逐音符修改自动保存，无需重新分配。';
+  $('draft-jump').hidden=!phraseDrafts.size;
+  document.querySelectorAll('#phrase-list details').forEach(row=>{
+    const changed=phraseDrafts.has(Number(row.id.slice(7)));row.classList.toggle('draft-pending',changed);
+    let marker=row.querySelector('.draft-marker');if(!marker){marker=element('span',undefined,'draft-marker');row.querySelector('summary').append(marker);}
+    marker.textContent=changed?'读音草稿待应用':'';
+  });
+}
+function focusPendingPhrase(){const id=phraseDrafts.keys().next().value,row=$(`phrase-${id}`);if(row){row.hidden=false;row.open=true;row.scrollIntoView({block:'center'});}}
+function restoreEditorDraft(source){
+  const draft=structuredClone(source);
+  if(draft.schema!==1||draft.job_id!==current||!['romaji','native'].includes(draft.reading_mode)||
+    !Array.isArray(draft.labels)||draft.labels.length!==prepared.notes.length||draft.labels.some(x=>typeof x!=='string'||x.length>64)||
+    !Array.isArray(draft.phrase_drafts)||typeof draft.fields!=='object'||!draft.fields||
+    JSON.stringify(draft.notes)!==JSON.stringify(prepared.notes.map(n=>[n.start,n.end,n.pitch])))throw Error('草稿格式无效或属于另一份乐谱，未覆盖当前输入。');
+  if(draft.prepared_revision!==prepared.revision){
+    if(!Array.isArray(draft.base_labels)||draft.base_labels.length!==labels.length)throw Error('旧版草稿缺少比较依据，无法自动恢复；可下载备份核对。');
+    const conflicts=draft.labels.flatMap((x,i)=>x!==draft.base_labels[i]&&prepared.labels[i]!==draft.base_labels[i]&&x!==prepared.labels[i]?[i+1]:[]);
+    if(conflicts.length)throw Error(`草稿与服务器在音符 ${conflicts.join('、')} 上有冲突，未覆盖当前输入。请下载所选草稿备份核对。`);
+    draft.labels=draft.labels.map((x,i)=>{
+      if(x!==draft.base_labels[i])return x;
+      if(prepared.labels[i]!==x){delete draft.note_states?.[`note-${i}`];delete draft.fields[`note-${i}`];}
+      return prepared.labels[i];
+    });
+  }
+  for(const item of draft.phrase_drafts){
+    if(!Array.isArray(item)||item.length!==2||!Number.isInteger(item[0])||!prepared.alignment?.phrases[item[0]]||typeof item[1]?.reading!=='string')throw Error('草稿的分句格式不正确，未覆盖当前输入。');
+  }
+  saveEditorDraft();restoringDraft=true;
+  try{showPrepared(prepared,null,draft);}finally{restoringDraft=false;}
+  saveEditorDraft();notice('草稿已恢复，包括未完成的拼写和逐音符修改；没有执行重新分配。');
+}
+async function loadEditorDrafts(automatic=true){
+  const job=current,serial=++draftLoadSerial,sequence=draftStore.sequence;
+  const {items,online}=await draftStore.candidates(job);
+  if(job!==current||serial!==draftLoadSerial)return;
+  draftChoices=items;$('draft-choices').replaceChildren();
+  for(const [i,item] of items.entries()){
+    const option=element('option',`${new Date(item.updated_at).toLocaleString()} · ${item.title||item.client_id.slice(0,6)}${item.prepared_revision!==prepared.revision?' · 旧版乐谱':''}`);option.value=i;$('draft-choices').append(option);
+  }
+  $('draft-recover').hidden=!items.length;
+  // Never replace input typed while the server request was in flight.
+  if(automatic&&items.length&&sequence===draftStore.sequence&&items[0].prepared_revision===prepared.revision){
+    const draft=await draftStore.read(job,items[0]);
+    if(job===current&&serial===draftLoadSerial&&sequence===draftStore.sequence)restoreEditorDraft(draft);
+  }else if(automatic&&!hasEditorChanges())$('draft-status').textContent=items.length?'发现旧版草稿，可在下方选择恢复':online?'开始编辑后自动保存':'暂未连接草稿服务；编辑会先保存在本机';
+}
+document.addEventListener('input',event=>{if(event.target.closest('#review-panel,#voice-panel'))saveEditorDraft();});
+document.addEventListener('change',event=>{if(event.target.closest('#review-panel,#voice-panel'))saveEditorDraft();});
+$('draft-save').onclick=()=>action(async()=>{saveEditorDraft();await draftStore.flush();},$('draft-save'));
+$('draft-download').onclick=()=>action(()=>draftStore.download(),$('draft-download'));
+$('draft-jump').onclick=focusPendingPhrase;
+$('draft-refresh').onclick=()=>action(()=>loadEditorDrafts(false),$('draft-refresh'));
+$('draft-restore').onclick=()=>action(async()=>{const job=current,sequence=draftStore.sequence;const draft=await draftStore.read(job,draftChoices[Number($('draft-choices').value)]);if(job!==current||sequence!==draftStore.sequence)throw Error('读取草稿期间有新编辑，已取消恢复；请停止输入后重试。');restoreEditorDraft(draft);},$('draft-restore'));
+$('draft-download-selected').onclick=()=>action(async()=>draftStore.download(await draftStore.read(current,draftChoices[Number($('draft-choices').value)])),$('draft-download-selected'));
+$('draft-import').onchange=()=>action(async()=>{const file=$('draft-import').files[0];if(!file)return;if(file.size>1024*1024)throw Error('草稿文件过大（上限 1 MiB）');restoreEditorDraft(JSON.parse(await file.text()));});
 (async()=>{try{const cfg=await api('/api/config');if(!cfg.ready.netease_api_module)notice('网易云音频接口尚未配置；可以上传本地音频，歌词链接仍可单独使用。');}catch(e){notice('暂时无法连接本地服务。');}
 const match=location.hash.match(/^#job=([a-f0-9]{32})$/);if(match)current=match[1];await history();await poll();setInterval(history,10000);})();

@@ -221,14 +221,23 @@ def realign(cfg,job,request):
         ranges=[(p['note_start'],p['note_end']) for p in phrases]
         if (index and left<ranges[index-1][1]) or (index+1<len(ranges) and right>ranges[index+1][0]):
             raise ValueError('音符范围与相邻句重叠，请先缩短相邻句范围，再调整本句')
-        old_left,old_right=ranges[index];ranges[index]=(left,right)
+        old_left,old_right=ranges[index]
+        # A phrase operation must not erase hand-edited note assignments. Compare
+        # with the old automatic mapping too, since previous submissions may have
+        # already persisted those edits in prepared.json.
+        old_auto=build_alignment(prepared['notes'],parsed,readings,alignment['clock'],ranges)['labels']
+        affected=set(range(old_left,old_right))|set(range(left,right))
+        protected={i for i in affected if submitted[i]!=old_auto[i]}
+        ranges[index]=(left,right)
         readings[index]=g2p(cfg,job,texts=[content])['lines'][0]
         if not readings[index]['units']:raise ValueError('本句没有可识别的读音')
         result=build_alignment(prepared['notes'],parsed,readings,alignment['clock'],ranges)
         labels=list(submitted)
         labels[old_left:old_right]=['SP']*(old_right-old_left)
         labels[left:right]=result['labels'][left:right]
+        for i in protected:labels[i]=submitted[i]
         result['phrases'][index]['manually_adjusted']=True
+        result['phrases'][index]['preserved_note_indices']=sorted(protected)
     elif request['mode']=='global':
         options={}
         for key in ('offset','scale'):
@@ -248,7 +257,9 @@ def realign(cfg,job,request):
     prepared.update(labels=labels,alignment=result,unmatched_moras=result['unassigned_units'],revision=str(time.time_ns()),
         reading=dict(reading='\n'.join(r['reading'] for r in readings),moras=[m for r in readings for m in r['moras']]))
     atomic_json(job/'prepared.json',prepared)
-    state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='分句草稿已更新，请核对标记的乐句',updated_at=time.time(),completed_at=None,error=None)
+    message='分句草稿已更新，请核对标记的乐句'
+    if request['mode']=='phrase' and protected:message+=f'；保留了 {len(protected)} 个手动修改的音符'
+    state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message=message,updated_at=time.time(),completed_at=None,error=None)
     atomic_json(job/'status.json',state)
 
 
