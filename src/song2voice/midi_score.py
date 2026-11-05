@@ -82,34 +82,80 @@ def clean_lyrics(text):
 
 
 def require_edited_mapping(prepared,labels):
+    if prepared.get('alignment') and prepared['alignment'].get('unassigned_units',0)>0:
+        raise ValueError('仍有整句读音未分配，请在按句编辑中修正范围或读音并重新分配，不能跳过这些歌词生成。')
     if prepared.get('unmatched_moras',0)>0 and labels==prepared['labels']:
         raise ValueError(f"自动歌词草稿还有 {prepared['unmatched_moras']} 个拍音未分配，不能直接生成。请先修改逐音符对应：一个音符可填多个拍音，延音填 -；也可返回输入页修正歌词范围。")
 
 
-def phonemize(text=None, readings=None):
-    """Executed in the labeling environment, where pyopenjtalk is installed."""
+def phonemize(text=None, readings=None, texts=None, english_runtime=None):
+    """Japanese moras and English words, with the existing TiFA English G2P."""
     import pyopenjtalk
-    def katakana(s):
-        return ''.join(chr(ord(c)+0x60) if 'ぁ'<=c<='ゖ' else c for c in s)
-    def phones(s):
-        if not s or re.search(r'[^ぁ-ゖァ-ヺー]',s):
-            raise ValueError('音符读音请使用日语假名；延音音符填写 -，休止填写 SP')
-        result=pyopenjtalk.g2p(katakana(s)).split()
+    import unicodedata
+    from functools import lru_cache
+    english=None
+    vowels=dict(a='ア',i='イ',u='ウ',e='エ',o='オ')
+    latin=r"[A-Za-z]+(?:['’][A-Za-z]+)*"
+    def english_phones(word):
+        nonlocal english
+        if english is None:
+            if not english_runtime:raise ValueError('英文歌词需要配置已有 TiFA 英文 G2P 资产，或手动填写假名读音')
+            import sys
+            sys.path.insert(0,str(Path(english_runtime['upstream_repo']).resolve()))
+            from inference.TiFA.g2p.converters.lstm import LSTMConverter
+            root=Path(english_runtime['tifa_model'])
+            english=LSTMConverter(dict_path=str(root/'dictionaries/ds_cmudict-07b.txt'),
+                model_path=str(root/'assets/LstmG2p-Eng'),beam_size=4)
+        result=english.convert(word.lower())[0].readings[0].paths[0]
+        phones=[p for group in result for p in group.phonemes]
+        if not phones:raise ValueError('无法确定英文单词读音：'+word)
+        return ['en/'+p.removeprefix('en/') for p in phones]
+    @lru_cache(maxsize=2048)
+    def japanese_phones(s):
+        s=''.join(chr(ord(c)+0x60) if 'ぁ'<=c<='ゖ' else c for c in s)
+        result=pyopenjtalk.g2p(s).split()
         result=[p.lower() if p in ('I','U') else p for p in result if p not in ('sil','pau')]
-        if not result:raise ValueError('无法确定读音：'+s+'；长音请填对应元音或 -')
+        if not result:raise ValueError('无法确定读音：'+s)
+        return result
+    def split_runs(s):
+        return re.split('('+latin+')',unicodedata.normalize('NFKC',s))
+    def phones(s):
+        if not s or re.search(r"[^ぁ-ゖァ-ヺーA-Za-z'’\s]",s):
+            raise ValueError('音符读音请使用日语假名或英文单词；延音填 -，休止填 SP')
+        result=[]
+        for part in split_runs(s):
+            if re.fullmatch(latin,part):result.extend(english_phones(part))
+            elif part.strip():result.extend(japanese_phones(part.strip()))
         return result
     if readings is not None:
         return {s:phones(s) for s in dict.fromkeys(readings) if s not in ('-','SP','AP')}
-    reading=pyopenjtalk.g2p(clean_lyrics(text),kana=True)
-    moras=[]
-    for c in reading:
-        if c in 'ァィゥェォャュョヮ' and moras:moras[-1]+=c
-        elif c=='ー' and moras:
-            vowel=phones(moras[-1])[-1]
-            if vowel in 'aiueo':moras.append(dict(a='ア',i='イ',u='ウ',e='エ',o='オ')[vowel])
-        elif 'ァ'<=c<='ヺ':moras.append(c)
-    return dict(reading=reading, moras=moras,
-                warning='自动读音和顺序分配仅为草稿；人名、助词、唱法及一字多音需要核对。')
+    def phrase(s):
+        # Furigana supplies a reading, rather than an additional sung word.
+        normalized=re.sub(r'[一-龯々〆ヵヶ]+[（(]([ぁ-ゖァ-ヺー]+)[）)]',r'\1',clean_lyrics(s))
+        units=[];warnings=[]
+        for part in split_runs(normalized):
+            if re.fullmatch(latin,part):
+                ph=english_phones(part)
+                weight=max(1,sum(p.removeprefix('en/') in ('aa','ae','ah','ao','aw','ax','ay','eh','er','ey','ih','iy','ow','oy','uh','uw') for p in ph))
+                units.append(dict(text=part,lang='en',weight=weight,phones=ph,vowel=None))
+                warnings.append('含英文词：保留英文发音，需试听确认演唱与断词')
+                continue
+            if not re.search(r'[一-龯ぁ-ゖァ-ヺ0-9]',part):continue
+            reading=pyopenjtalk.g2p(part,kana=True);moras=[]
+            for c in reading:
+                if c in 'ァィゥェォャュョヮ' and moras:moras[-1]+=c
+                elif c=='ー' and moras:
+                    last=japanese_phones(moras[-1])[-1]
+                    if last in vowels:moras.append(vowels[last])
+                    else:warnings.append('未能识别长音元音，请修改本句读音')
+                elif 'ァ'<=c<='ヺ':moras.append(c)
+            for mora in moras:
+                ph=japanese_phones(mora)
+                units.append(dict(text=mora,lang='ja',weight=1,phones=ph,vowel=vowels.get(ph[-1])))
+        return dict(reading=' '.join(u['text'] for u in units),moras=[u['text'] for u in units],units=units,
+            warnings=list(dict.fromkeys(warnings)),warning='自动读音与音符分配是草稿，分句时间和发音需要核对。')
+    if texts is not None:return dict(lines=[phrase(s) for s in texts])
+    return phrase(text)
 
 
 def notes_to_score(notes, labels, phones, bpm, lead_in=.5):

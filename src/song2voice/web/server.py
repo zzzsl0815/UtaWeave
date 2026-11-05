@@ -177,7 +177,7 @@ class Handler(ReportHandler):
                     job=self.workspace/'jobs'/uuid.uuid4().hex;job.mkdir()
                     atomic_json(job/'request.json',request);launch(self.config,job,'prepare')
                     self.send_json(dict(id=job.name));return
-                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi)',path)
+                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi|align)',path)
                 if not match:raise ValueError('Unknown action')
                 job=self.workspace/'jobs'/identifier(match[1]);action=match[2]
                 if action=='cancel':
@@ -189,6 +189,11 @@ class Handler(ReportHandler):
                 if action=='retry':launch(self.config,job,'prepare');self.send_json(dict(ok=True));return
                 if not (job/'prepared.json').exists():raise ValueError('请先完成乐谱准备')
                 prepared=read(job/'prepared.json');require_score_revision(prepared,request)
+                if action=='align':
+                    if alive(job):raise ValueError('任务正在执行，请等待或先停止')
+                    if prepared.get('mode')!='midi' or not prepared.get('alignment'):raise ValueError('当前乐谱没有 LRC 分句，请使用带时间戳的歌词重新准备')
+                    if request.get('mode') not in ('phrase','global'):raise ValueError('未知的分句操作')
+                    atomic_json(job/'alignment-request.json',request);launch(self.config,job,'align');self.send_json(dict(ok=True));return
                 labels=request.get('labels',[]);expected=prepared['labels']
                 if not isinstance(labels,list) or len(labels)!=len(expected) or any(not isinstance(x,str) or not x.strip() or len(x)>64 for x in labels):
                     raise ValueError('请补齐所有音符的歌词读音')

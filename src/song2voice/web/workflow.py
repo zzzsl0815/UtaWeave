@@ -60,6 +60,8 @@ def stage(job, name, message, **extra):
 
 
 def g2p(cfg,job,**request):
+    annotation=read(cfg['annotation_config']);base=Path(cfg['annotation_config']).parent
+    request['english_runtime']={key:os.path.abspath(base/Path(annotation[key]).expanduser()) for key in ('upstream_repo','tifa_model')}
     atomic_json(job/'g2p-request.json',request)
     command([cfg['labeling_python'],'-m','song2voice.midi_score',job/'g2p-request.json',job/'g2p-result.json'])
     return read(job/'g2p-result.json')
@@ -98,10 +100,21 @@ def prepare(cfg, job, request):
         lyric=lyrics(cfg,request)
         labels=[n.get('lyric','') for n in track['notes']]
         draft=dict(reading='',moras=[],warning='请逐音符核对歌词与读音。')
+        alignment=None
         if lyric['text']:
-            stage(job,'lyrics','转换日语读音，准备逐音符草稿')
-            draft=g2p(cfg,job,text=lyric['text'])
-            labels=[draft['moras'][i] if i<len(draft['moras']) else '' for i in range(len(track['notes']))]
+            from ..lyric_alignment import parse_lrc,align_lrc
+            parsed=parse_lrc(lyric['original'])
+            stage(job,'lyrics','按歌词分句转换读音，匹配 MIDI 时间轴')
+            if len(parsed['lines'])>=2:
+                if parsed['untimed_lines']:raise ValueError('LRC 中有未带时间戳的正文，请补齐时间戳或改用纯文本')
+                readings=g2p(cfg,job,texts=[line['text'] for line in parsed['lines']])['lines']
+                alignment=align_lrc(track['notes'],parsed,readings)
+                labels=alignment.pop('labels')
+                draft=dict(reading='\n'.join(r['reading'] for r in readings),moras=[m for r in readings for m in r['moras']],
+                    warning='已按 LRC 分句匹配并分配读音；请优先核对标记的乐句，时间和分配分数不是准确率。')
+            else:
+                draft=g2p(cfg,job,text=lyric['text'])
+                labels=[draft['moras'][i] if i<len(draft['moras']) else '' for i in range(len(track['notes']))]
         if not any(labels):raise ValueError('MIDI 没有内嵌歌词，请输入歌词文本或歌词链接')
         warnings=[x for x in [info['warning'],draft['warning']] if x]
         if abs(info['bpm']-info['render_bpm'])>.01:
@@ -110,7 +123,7 @@ def prepare(cfg, job, request):
             warnings.append(f"已从读音草稿中排除 {len(lyric['excluded_credit_lines'])} 行作词、作曲等署名，原文仍保留。")
         prepared=dict(mode='midi',notes=track['notes'],labels=labels,bpm=info['bpm'],render_bpm=info['render_bpm'],lyrics=lyric,
                       reading=draft,track=track['index'],warnings=warnings,
-                      unmatched_moras=max(0,len(draft['moras'])-len(labels)))
+                      alignment=alignment,unmatched_moras=alignment['unassigned_units'] if alignment else max(0,len(draft['moras'])-len(labels)))
     else:
         source=download(cfg,request['source_url'],job/'source') if request.get('source_url') else asset(cfg,request['source_asset'])
         lyric=lyrics(cfg,request,request.get('source_url'))
@@ -185,6 +198,60 @@ def require_score_revision(prepared,request):
         raise ValueError('乐谱已重新准备，当前页面的草稿版本过期。请刷新页面并核对新草稿后再提交。')
 
 
+def realign(cfg,job,request):
+    from ..lyric_alignment import align_lrc,build_alignment
+    prepared=read(job/'prepared.json');require_score_revision(prepared,request)
+    alignment=prepared.get('alignment')
+    if prepared['mode']!='midi' or not alignment:raise ValueError('当前任务没有带时间戳的分句草稿，请用 LRC 重新准备乐谱')
+    submitted=request.get('labels')
+    if not isinstance(submitted,list) or len(submitted)!=len(prepared['notes']) or any(not isinstance(x,str) or len(x)>64 for x in submitted):
+        raise ValueError('音符读音数量或格式不正确')
+    stage(job,'lyrics','按句重新分配歌词；保留 MIDI 音高和时间')
+    phrases=alignment['phrases']
+    parsed=dict(lines=[dict(id=p['id'],text=p['text'],time=p['lrc_start'],end=p['lrc_end']) for p in phrases],
+                offset_tag_ms=alignment['clock'].get('lrc_offset_tag_ms',0))
+    readings=[dict(reading=p['reading'],units=p['units'],moras=[u['text'] for u in p['units']],warnings=p.get('reading_warnings',[])) for p in phrases]
+    if request['mode']=='phrase':
+        index=request.get('phrase_id')
+        if type(index) is not int or not 0<=index<len(phrases):raise ValueError('无效的乐句编号')
+        content=request.get('reading')
+        if not isinstance(content,str) or not content.strip() or len(content)>2000:raise ValueError('本句读音应为 1–2000 字符')
+        left,right=request.get('note_start'),request.get('note_end')
+        if type(left) is not int or type(right) is not int or not 0<=left<right<=len(submitted):raise ValueError('本句首尾音符编号无效')
+        ranges=[(p['note_start'],p['note_end']) for p in phrases]
+        if (index and left<ranges[index-1][1]) or (index+1<len(ranges) and right>ranges[index+1][0]):
+            raise ValueError('音符范围与相邻句重叠，请先缩短相邻句范围，再调整本句')
+        old_left,old_right=ranges[index];ranges[index]=(left,right)
+        readings[index]=g2p(cfg,job,texts=[content])['lines'][0]
+        if not readings[index]['units']:raise ValueError('本句没有可识别的读音')
+        result=build_alignment(prepared['notes'],parsed,readings,alignment['clock'],ranges)
+        labels=list(submitted)
+        labels[old_left:old_right]=['SP']*(old_right-old_left)
+        labels[left:right]=result['labels'][left:right]
+        result['phrases'][index]['manually_adjusted']=True
+    elif request['mode']=='global':
+        options={}
+        for key in ('offset','scale'):
+            if request.get(key) is not None:
+                if type(request[key]) not in (int,float):raise ValueError('时间偏移和比例必须为数值')
+                options[key]=float(request[key])
+        result=align_lrc(prepared['notes'],parsed,readings,**options);labels=result['labels']
+    else:raise ValueError('未知的分句操作')
+    result.pop('labels')
+    for i,phrase in enumerate(result['phrases']):
+        if request['mode']=='phrase' and i!=request['phrase_id'] and phrases[i].get('manually_adjusted'):phrase['manually_adjusted']=True
+    # One atomic prepared file is the source of truth. Keep submitted note edits
+    # in the snapshot too, even if they existed only in the browser until now.
+    history=job/'alignment-history';history.mkdir(exist_ok=True)
+    snapshot=deepcopy(prepared);snapshot['labels']=submitted
+    atomic_json(history/(str(time.time_ns())+'.json'),snapshot)
+    prepared.update(labels=labels,alignment=result,unmatched_moras=result['unassigned_units'],revision=str(time.time_ns()),
+        reading=dict(reading='\n'.join(r['reading'] for r in readings),moras=[m for r in readings for m in r['moras']]))
+    atomic_json(job/'prepared.json',prepared)
+    state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='分句草稿已更新，请核对标记的乐句',updated_at=time.time(),completed_at=None,error=None)
+    atomic_json(job/'status.json',state)
+
+
 def render(cfg,job,request):
     from ..references import prepare_reference
     from ..rendering.generate import plan
@@ -252,11 +319,12 @@ def run(config,job_id,action):
     def interrupted(*_):raise InterruptedError('任务已停止')
     signal.signal(signal.SIGTERM,interrupted)
     try:
-        cpu_only=action=='prepare' and read(job/'request.json')['mode']=='midi'
+        cpu_only=action=='align' or action=='prepare' and read(job/'request.json')['mode']=='midi'
         context=nullcontext(None) if cpu_only else (Path(cfg['workspace'])/'inference.lock').open('a')
         with context as lock:
             if lock is not None:fcntl.flock(lock,fcntl.LOCK_EX)
             if action=='prepare':prepare(cfg,job,read(job/'request.json'))
+            elif action=='align':realign(cfg,job,read(job/'alignment-request.json'))
             else:render(cfg,job,read(job/'render-request.json'))
     except BaseException as error:
         state=read(job/'status.json');cancelled=(job/'CANCEL').exists()
@@ -271,4 +339,4 @@ def run(config,job_id,action):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--job',required=True)
-    p.add_argument('--action',choices=['prepare','render'],required=True);a=p.parse_args();run(a.config,a.job,a.action)
+    p.add_argument('--action',choices=['prepare','render','align'],required=True);a=p.parse_args();run(a.config,a.job,a.action)

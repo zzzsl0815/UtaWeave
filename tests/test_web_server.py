@@ -54,9 +54,10 @@ class WebServerTests(unittest.TestCase):
         (job/'prepared.json').write_text(json.dumps(dict(labels=['き'],revision='new-revision')))
         for revision in [None,'old-revision']:
             payload=json.dumps(dict(labels=['み'],confirmed=True,prepared_revision=revision)).encode()
-            with self.assertRaises(HTTPError) as error:
-                urlopen(Request(self.base+'/api/jobs/'+job.name+'/render',payload,{'X-UtaWeave':'local'}))
-            self.assertIn('版本过期',error.exception.read().decode())
+            for action in ['render','align']:
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(self.base+'/api/jobs/'+job.name+'/'+action,payload,{'X-UtaWeave':'local'}))
+                self.assertIn('版本过期',error.exception.read().decode())
         self.assertFalse((job/'process.json').exists())
 
     def test_worker_surfaces_current_stage_error_and_ignores_stale_runs(self):
