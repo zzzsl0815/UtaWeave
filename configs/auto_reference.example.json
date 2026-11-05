@@ -1,0 +1,31 @@
+{
+  "durations": [
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    7.0,
+    8.0,
+    9.0,
+    10.0,
+    12.0,
+    15.0,
+    18.0,
+    21.0,
+    24.0
+  ],
+  "maximum_seconds": 24.0,
+  "stride_seconds": 2.0,
+  "candidates_per_duration": 24,
+  "minimum_active_fraction": 0.75,
+  "maximum_quiet_seconds": 1.0,
+  "minimum_rms": 0.004,
+  "minimum_quality": 3.5,
+  "maximum_quality_drop": 0.35,
+  "duration_bonus_per_doubling": 0.3,
+  "edge_penalty": 0.03,
+  "processing": "native_vocal",
+  "probe_seconds": 4.0,
+  "probe_stride_seconds": 1.0,
+  "refinement_regions": 6
+}

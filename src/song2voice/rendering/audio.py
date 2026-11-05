@@ -2,6 +2,30 @@
 import numpy as np
 SR=48000
 
+def clock_transform(units):
+    """Map aligned phone boundaries to the source clock, including one-note phrases."""
+    anchors = [u for u in units if u['source_end']-u['source_start'] >= .03 and
+               u['generated_end']-u['generated_start'] >= .03]
+    if not units:
+        raise ValueError('No lyric boundaries for clock alignment')
+    # Pitch availability is independent of lyric timing. In particular, a 10 ms
+    # source artifact can become a long audible syllable. Excluding it here would
+    # place that syllable over the next phrase despite valid global tempo.
+    first, last = units[0], units[-1]
+    source_span = last['source_end']-first['source_start']
+    generated_span = last['generated_end']-first['generated_start']
+    if not np.isfinite([source_span, generated_span]).all() or min(source_span, generated_span) < .03:
+        raise ValueError('No usable clock span: complete lyric span is shorter than 30 ms or nonfinite')
+    # One sustained syllable still has two measured endpoints. Do not fabricate
+    # a second syllable or bypass the normal tempo limits for this case.
+    ratio = generated_span/source_span
+    return dict(tempo_ratio=ratio,
+        placement_seconds=first['source_start']-first['generated_start']/ratio,
+        clock_anchor_first=dict(line_index=first['line_index'], word_index=first['word_index']),
+        clock_anchor_last=dict(line_index=last['line_index'], word_index=last['word_index']),
+        clock_anchor_count=len(anchors),
+        clock_basis='single_unit_endpoints' if len(units) == 1 else 'complete_lyric_endpoints')
+
 def intervals(mask, step=.01, minimum=.25):
     edges=np.diff(np.r_[False,mask,False].astype(np.int8))
     return [(a*step,b*step) for a,b in zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)) if (b-a)*step>=minimum]

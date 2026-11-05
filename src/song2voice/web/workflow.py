@@ -1,0 +1,250 @@
+"""Background inference jobs shared by the local web interface."""
+import argparse
+from contextlib import nullcontext
+from copy import deepcopy
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+from ..selection import atomic_json, require_reference
+from ..midi_score import inspect_midi, clean_lyrics, notes_to_score, edit_score
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def load_config(path):
+    path=Path(path).absolute();cfg=read(path)
+    for key in ('workspace','render_config','reference_runtime','annotation_config','labeling_python',
+                'netease_bridge','netease_api_module','credential_file'):
+        if cfg.get(key):cfg[key]=os.path.abspath(path.parent/Path(cfg[key]).expanduser())
+    for key in ('workspace','render_config','reference_runtime','annotation_config','labeling_python'):
+        if not cfg.get(key):raise ValueError('Missing web configuration: '+key)
+    cfg['config_file']=str(path)
+    return cfg
+
+
+def asset(cfg, token):
+    if not isinstance(token,str) or len(token)!=32 or any(c not in '0123456789abcdef' for c in token):
+        raise ValueError('Invalid upload ID')
+    root=Path(cfg['workspace'])/'uploads'
+    meta=read(root/(token+'.json'));path=root/meta['file']
+    if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):raise ValueError('Uploaded file is missing')
+    return path
+
+
+def template(cfg):
+    from ..rendering.pipeline import PATH_KEYS
+    path=Path(cfg['render_config']);value=read(path)
+    for key in (*PATH_KEYS,'render_python','align_python'):
+        if value.get(key):value[key]=os.path.abspath(path.parent/Path(value[key]).expanduser())
+    if '/' in value.get('ffmpeg',''):value['ffmpeg']=os.path.abspath(path.parent/value['ffmpeg'])
+    return value
+
+
+def command(arguments):
+    env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2])+os.pathsep+os.environ.get('PYTHONPATH',''))
+    subprocess.run([str(x) for x in arguments],check=True,env=env)
+
+
+def stage(job, name, message, **extra):
+    state=read(job/'status.json')
+    state.update(status='running',stage=name,message=message,updated_at=time.time(),**extra)
+    atomic_json(job/'status.json',state)
+
+
+def g2p(cfg,job,**request):
+    atomic_json(job/'g2p-request.json',request)
+    command([cfg['labeling_python'],'-m','song2voice.midi_score',job/'g2p-request.json',job/'g2p-result.json'])
+    return read(job/'g2p-result.json')
+
+
+def lyrics(cfg, request, source_url=None):
+    from ..netease import fetch_lyrics
+    text=request.get('lyrics_text','').strip()
+    url=request.get('lyrics_url','').strip() or source_url
+    result=dict(original=text,origin='输入文本',warning=None)
+    if not text and url:
+        try:
+            result.update(fetch_lyrics(url),origin='网易云歌词')
+        except Exception:
+            result['warning']='歌词暂时获取失败，可返回输入页粘贴歌词；原曲转谱仍可使用音频识别。'
+    result['text']=clean_lyrics(result['original'])
+    return result
+
+
+def download(cfg, url, out):
+    from ..netease import fetch_reference_song
+    if not cfg.get('netease_api_module') or not Path(cfg['netease_api_module']).is_file():
+        raise ValueError('网易云音频接口尚未配置；可上传本地完整音频')
+    os.environ['NETEASE_API_MODULE']=cfg['netease_api_module']
+    record=fetch_reference_song(url,cfg['netease_bridge'],cfg.get('credential_file'),out)
+    return out/record['audio']
+
+
+def prepare(cfg, job, request):
+    from ..references import prepare_stems
+    stage(job,'input','读取输入与歌词')
+    if request['mode']=='midi':
+        source=asset(cfg,request['midi_asset']);info=inspect_midi(source)
+        track=next((t for t in info['tracks'] if t['index']==request['track']),None)
+        if track is None or track['polyphonic']:raise ValueError('请选择没有重叠音符的主旋律轨')
+        lyric=lyrics(cfg,request)
+        labels=[n.get('lyric','') for n in track['notes']]
+        draft=dict(reading='',moras=[],warning='请逐音符核对歌词与读音。')
+        if lyric['text']:
+            stage(job,'lyrics','转换日语读音，准备逐音符草稿')
+            draft=g2p(cfg,job,text=lyric['text'])
+            labels=[draft['moras'][i] if i<len(draft['moras']) else '' for i in range(len(track['notes']))]
+        if not any(labels):raise ValueError('MIDI 没有内嵌歌词，请输入歌词文本或歌词链接')
+        prepared=dict(mode='midi',notes=track['notes'],labels=labels,bpm=info['bpm'],lyrics=lyric,
+                      reading=draft,track=track['index'],warnings=[x for x in [info['warning'],draft['warning']] if x],
+                      unmatched_moras=max(0,len(draft['moras'])-len(labels)))
+    else:
+        source=download(cfg,request['source_url'],job/'source') if request.get('source_url') else asset(cfg,request['source_asset'])
+        lyric=lyrics(cfg,request,request.get('source_url'))
+        stage(job,'separate','分离原曲人声与伴奏')
+        prepare_stems(source,job/'source-stems',Path(cfg['reference_runtime']),True)
+        stage(job,'annotate','识别歌词、对齐音素与提取音符')
+        annotation=read(cfg['annotation_config'])
+        for key in ('upstream_repo','romaji_model','qwen_model','kashi_model','tifa_model','game_model'):
+            annotation[key]=os.path.abspath(Path(cfg['annotation_config']).parent/Path(annotation[key]).expanduser())
+        annotation.update(audio=str(job/'source-stems/stems/vocal_for_reference.wav'),out=str(job/'annotation'),
+                          song_id=job.name,bpm=request['bpm'])
+        atomic_json(job/'annotation.local.json',annotation)
+        command([cfg['labeling_python'],'-m','song2voice.vocal2midi_native_worker','--config',job/'annotation.local.json'])
+        score=read(job/'annotation/score.vr.json')
+        units=[]
+        for row in score:
+            cursor=row['source_window']['start_seconds']
+            for i,(word,duration) in enumerate(zip(row['word'],row['word_dur'])):
+                if word not in ('SP','AP'):
+                    pitches=[p for p,o in zip(row['pitch'],row['pitch2word']) if o==i]
+                    units.append(dict(start=cursor,end=cursor+duration,pitch=next((p for p in pitches if p>0),0),lyric=word))
+                cursor+=duration
+        prepared=dict(mode='song',notes=units,labels=[n['lyric'] for n in units],bpm=request['bpm'],lyrics=lyric,
+                      warnings=['显示的是音频自动标注；网易云歌词仅供核对，没有直接替换自动标注。'],unmatched_moras=0)
+    atomic_json(job/'prepared.json',prepared)
+    state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='请核对音符、歌词读音与延音，再生成演唱',updated_at=time.time())
+    atomic_json(job/'status.json',state)
+
+
+def export_lyric_midi(source, track_index, notes, labels, destination):
+    import mido
+    try:midi=mido.MidiFile(source,charset='utf-8')
+    except UnicodeDecodeError:midi=mido.MidiFile(source,charset='shift_jis')
+    events=[];tick=0
+    for order,event in enumerate(midi.tracks[track_index]):
+        tick+=event.time
+        if event.type!='lyrics':events.append((tick,1,order,event.copy(time=0)))
+    for i,(note,label) in enumerate(zip(notes,labels)):
+        events.append((note['tick'],0,i,mido.MetaMessage('lyrics',text=label,time=0)))
+    track=mido.MidiTrack();last=0
+    for tick,priority,order,event in sorted(events,key=lambda r:r[:3]):
+        track.append(event.copy(time=tick-last));last=tick
+    midi.tracks[track_index]=track;midi.charset='utf-8';midi.save(destination)
+
+
+def midi_stems(cfg,job,notes,offset,request):
+    import numpy as np
+    import soundfile as sf
+    seconds=notes[-1]['end']+offset+1.5
+    root=job/'midi-timeline';root.mkdir(exist_ok=True)
+    silence=np.zeros(math_ceil(seconds*48000),dtype=np.float32)
+    sf.write(root/'vocal_native.wav',silence,48000,subtype='PCM_16')
+    if request.get('accompaniment_asset'):
+        command([template(cfg).get('ffmpeg','ffmpeg'),'-y','-hide_banner','-loglevel','error',
+                 '-i',asset(cfg,request['accompaniment_asset']),'-af',
+                 f'aresample=48000,adelay={round(offset*48000)}S:all=1,apad,atrim=end_sample={len(silence)}',
+                 '-ar','48000','-ac','2','-c:a','pcm_s16le',root/'instrumental.wav'])
+    else:sf.write(root/'instrumental.wav',silence,48000,subtype='PCM_16')
+    atomic_json(root/'timeline.json',dict(source='midi',lead_in_seconds=offset,seconds=seconds,
+        silent_vocal_buffer='Timing/planning only; not an original recording, acoustic target or loudness reference'))
+    return root
+
+
+def math_ceil(value):
+    import math
+    return math.ceil(value)
+
+
+def render(cfg,job,request):
+    from ..references import prepare_reference
+    from ..rendering.generate import plan
+    from ..conditioning import require_conditioning
+    prepared=read(job/'prepared.json');labels=request['labels'];original=read(job/'request.json')
+    stage(job,'score','检查歌词与音符对应')
+    wanted=labels if prepared['mode']=='midi' else [x for x,y in zip(labels,prepared['labels']) if x!=y]
+    phones=g2p(cfg,job,readings=wanted) if wanted else {}
+    runtime=template(cfg)
+    if prepared['mode']=='midi':
+        score,offset=notes_to_score(prepared['notes'],labels,phones,prepared['bpm'])
+        stems=midi_stems(cfg,job,prepared['notes'],offset,original)
+        runtime['source_mode']='midi'
+        export_lyric_midi(asset(cfg,original['midi_asset']),prepared['track'],prepared['notes'],labels,job/'lyrics.mid')
+    else:
+        score=edit_score(read(job/'annotation/score.vr.json'),labels,phones)
+        stems=job/'source-stems/stems';runtime['source_mode']='song'
+    require_conditioning(score)
+    split=plan(score,whole_lines=True,stems=stems)
+    atomic_json(job/'score.vr.json',score)
+    atomic_json(job/'score-check.json',dict(chunks=split['chunk_count'],lyric_units=split['lyric_unit_count']))
+    stage(job,'reference','准备目标音色参考')
+    ref=request['reference'];mode=ref['mode']
+    if mode=='same_song':
+        if prepared['mode']!='song':raise ValueError('仅原曲模式可使用原曲音色')
+        reference=prepare_reference(job/'reference',from_run=job/'source-stems')
+    elif mode=='clip':reference=prepare_reference(job/'reference',clip=asset(cfg,ref['asset']))
+    else:
+        audio=download(cfg,ref['url'],job/'reference-source') if mode=='netease' else asset(cfg,ref['asset'])
+        reference=prepare_reference(job/'reference',audio=audio,runtime_path=Path(cfg['reference_runtime']))
+    selected=require_reference(reference)
+    import shutil
+    preview=job/('reference-preview'+Path(selected['audio']).suffix.lower());shutil.copyfile(selected['audio'],preview)
+    atomic_json(job/'reference-info.json',dict(file=preview.name,score=selected.get('score'),
+        seconds=selected.get('source_window',{}).get('end_seconds',0)-selected.get('source_window',{}).get('start_seconds',0),
+        method=selected.get('status')))
+    seed_path=Path(runtime['seed_vc_config']);seed=read(seed_path)
+    for key in ('repo','assets','python'):seed[key]=os.path.abspath(seed_path.parent/Path(seed[key]).expanduser())
+    seed.update(steps=request['steps'],cfg=request['cfg']);atomic_json(job/'seed.local.json',seed)
+    runtime.update(score=str(job/'score.vr.json'),stems=str(stems),reference_run=str(reference),seed_vc_config=str(job/'seed.local.json'))
+    atomic_json(job/'render.local.json',runtime)
+    stage(job,'render','VR 导唱 → Seed-VC 换声 → 对齐与导出')
+    command([sys.executable,'-m','song2voice.rendering.pipeline','--config',job/'render.local.json','--out',job/'render'])
+    result=read(job/'render/latest.json');report=Path(result['report'])
+    state=read(job/'status.json');state.update(status='complete',stage='complete',message='生成完成，可以试听',
+        report=str(report.relative_to(job)),updated_at=time.time(),completed_at=time.time())
+    atomic_json(job/'status.json',state)
+
+
+def run(config,job_id,action):
+    cfg=load_config(config);job=Path(cfg['workspace'])/'jobs'/job_id
+    def interrupted(*_):raise InterruptedError('任务已停止')
+    signal.signal(signal.SIGTERM,interrupted)
+    try:
+        cpu_only=action=='prepare' and read(job/'request.json')['mode']=='midi'
+        context=nullcontext(None) if cpu_only else (Path(cfg['workspace'])/'inference.lock').open('a')
+        with context as lock:
+            if lock is not None:fcntl.flock(lock,fcntl.LOCK_EX)
+            if action=='prepare':prepare(cfg,job,read(job/'request.json'))
+            else:render(cfg,job,read(job/'render-request.json'))
+    except BaseException as error:
+        state=read(job/'status.json');cancelled=(job/'CANCEL').exists()
+        state.update(status='cancelled' if cancelled else 'failed',stage='stopped' if cancelled else 'error',
+                     message='任务已停止' if cancelled else '任务失败，请检查错误信息后重试',
+                     error=str(error)[:1600],updated_at=time.time())
+        atomic_json(job/'status.json',state)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--job',required=True)
+    p.add_argument('--action',choices=['prepare','render'],required=True);a=p.parse_args();run(a.config,a.job,a.action)

@@ -18,5 +18,7 @@
     "base_lm": 1.0,
     "residual_lm": 1.0,
     "feat_decoder.estimator": 0.5
-  }
+  },
+  "guide_reference_run": "../runs/guide-reference",
+  "seed_vc_config": "seed_vc.local.json"
 }

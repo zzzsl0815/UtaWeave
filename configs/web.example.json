@@ -1,0 +1,10 @@
+{
+  "workspace": "../runs/web",
+  "render_config": "render.local.json",
+  "reference_runtime": "reference_runtime.local.json",
+  "annotation_config": "vocal2midi.local.json",
+  "labeling_python": "../.venv-labeling/bin/python",
+  "netease_bridge": "../scripts/netease_bridge.cjs",
+  "netease_api_module": "../vendor/netease-api/main.js",
+  "credential_file": null
+}

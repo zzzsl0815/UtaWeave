@@ -11,7 +11,7 @@ import urllib.request
 from .score import save, sha
 
 
-def fetch_reference_song(url, bridge_script, credential_file, out, level='exhigh'):
+def song_id_from_url(url):
     parsed = urllib.parse.urlparse(url)
     if parsed.hostname not in ['music.163.com', 'y.music.163.com']:
         raise ValueError('Expected a music.163.com song URL')
@@ -20,6 +20,23 @@ def fetch_reference_song(url, bridge_script, credential_file, out, level='exhigh
     song_id = str(query.get('id', [match[1] if match else ''])[0])
     if not song_id.isdigit():
         raise ValueError('Song id is missing')
+    return song_id
+
+
+def fetch_lyrics(url):
+    song_id = song_id_from_url(url)
+    endpoint = 'https://music.163.com/api/song/lyric?' + urllib.parse.urlencode(
+        dict(id=song_id, lv=-1, kv=-1, tv=-1))
+    request = urllib.request.Request(endpoint, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(request, timeout=25) as response:
+        data = json.load(response)
+    return dict(song_id=song_id, original=data.get('lrc', {}).get('lyric', ''),
+                translated=data.get('tlyric', {}).get('lyric', ''),
+                romanized=data.get('romalrc', {}).get('lyric', ''))
+
+
+def fetch_reference_song(url, bridge_script, credential_file, out, level='exhigh'):
+    song_id = song_id_from_url(url)
     out = Path(out).resolve()
     marker = out/'source.json'
     if marker.exists():

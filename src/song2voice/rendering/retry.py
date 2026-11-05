@@ -18,7 +18,7 @@ from .audio import activity
 def main(parent,out):
     base=read(parent/'manifest.json');alignments=read(parent/'generated_alignment.json')
     assert base['status'] in ['complete','generated']
-    flagged=[a['id'] for a in alignments if a['compressed_units'] or a['warning_length_cap'] or a['warning_tempo_outside_preferred']]
+    flagged=[a['id'] for a in alignments if a['compressed_units'] or a.get('expanded_units') or a['warning_length_cap'] or a['warning_tempo_outside_preferred']]
     assert flagged
     manifest=copy.deepcopy(base);manifest.update(status='loading',results=[],retry_parent=str(parent))
     manifest.pop('outputs',None);manifest.pop('completed_at',None)
@@ -29,7 +29,7 @@ def main(parent,out):
             candidate=copy.deepcopy(c);candidate['original_chunk_id']=c['id']
             candidate['id']=c['id']+f'_retry{attempt+1}';chunks.append(candidate)
     manifest['plan']['chunks']=chunks;manifest['plan']['chunk_count']=len(chunks)
-    manifest['protocol']['retry_rule']='Two samples for compressed units or tempo outside preferred range; preserve all attempts.'
+    manifest['protocol']['retry_rule']='Two samples for compressed/expanded units or tempo outside preferred range; preserve all attempts.'
     out.mkdir(parents=True,exist_ok=True);write(out/'manifest.json',manifest)
     write(out/'chunk_plan.json',manifest['plan'])
     progress(out,'loading_retry_model',source_chunks=flagged,candidates=len(chunks))

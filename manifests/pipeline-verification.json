@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-27",
+  "pipeline": "VR guide -> Seed-VC -> TiFA realignment -> assembly",
+  "reference_modes": [
+    "provided_clip",
+    "automatic_quality_duration"
+  ],
+  "unit_tests": {
+    "total": 59,
+    "passed": 58,
+    "skipped": 1,
+    "skip_reason": "Optional upstream English test requires mido in SVC runtime",
+    "labeling_runtime_followup": {
+      "tests": 5,
+      "passed": 5,
+      "includes_previously_skipped_test": true
+    }
+  },
+  "automatic_reference": {
+    "candidate_count": 795,
+    "seconds": 5.0,
+    "effective_seconds": 4.2,
+    "singmos": 4.721364,
+    "automatic_search_has_no_prior_human_anchor": true
+  },
+  "render_smoke": {
+    "real_japanese_phrases": 2,
+    "reference_modes_tested": 2,
+    "shared_vr_guide_caches": 1,
+    "source_seconds": 35.76,
+    "exports": [
+      "mix",
+      "vocal",
+      "natural"
+    ],
+    "sample_rate": 48000,
+    "remaining_alignment_flags": 0,
+    "cached_rerun_preserved_guide_audio_and_seed_worker_log_mtimes": true
+  },
+  "packaging": {
+    "wheel_built": true,
+    "deleted_modules_absent": true
+  },
+  "historical_audio_preserved": false,
+  "cleanup_note": "Historical generated audio was removed during the 2026-11-05 cleanup; this file records the original verification, not current artifacts.",
+  "listening_quality_certified": false,
+  "unverified": [
+    "Fresh-machine GPU dependency installation",
+    "Full-song Seed-VC timbre quality beyond the short-phrase smoke test"
+  ]
+}

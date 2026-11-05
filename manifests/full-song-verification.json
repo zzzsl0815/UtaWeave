@@ -1,0 +1,295 @@
+{
+  "date": "2026-10-27",
+  "song": {
+    "id": "1293904824",
+    "title": "マリーゴールド",
+    "artist": "あいみょん",
+    "split": "test"
+  },
+  "status": "full_song_rendered_with_quality_flags",
+  "run_id": "bdad319a363a",
+  "source_seconds": 308.1066666666667,
+  "lyric_units": 601,
+  "render_chunks": 26,
+  "current_production_code_matches_run_recipe": false,
+  "historical_record_note": "Metrics describe the 2026-10-27 run. Generated audio was removed on 2026-11-05; source audio and annotations remain. Current release checks are recorded separately.",
+  "target_reference": {
+    "seconds": 5.0,
+    "singmos": 4.721364,
+    "sha256": "c3edd166a9e2f5af1b06bd863b2f08b3f99737efe2b317bfc94890ce1f64a44b"
+  },
+  "tests": {
+    "total": 70,
+    "main_runtime_passed": 69,
+    "optional_upstream_test_passed_in_labeling_runtime": true
+  },
+  "exports": {
+    "seed": {
+      "verification": {
+        "all_score_units_submitted_once": true,
+        "lyric_units": 601,
+        "original_lyric_lines": 36,
+        "chunks": 26,
+        "no_generation_length_caps": true,
+        "no_nonfinite_or_clipped_samples": true,
+        "source_clock_length_preserved": true,
+        "lyric_body_unchanged_by_joins": true,
+        "tempo_ratio_range": [
+          0.9021077043174032,
+          1.1132686084142485
+        ],
+        "unresolved_source_pitch_units": 12,
+        "alignment_flags": [
+          {
+            "chunk": "chunk_00",
+            "tempo_ratio": 0.983221476510067,
+            "tiny_units": [
+              8
+            ],
+            "compressed_units": [],
+            "expanded_units": [],
+            "length_cap": false
+          },
+          {
+            "chunk": "chunk_20",
+            "tempo_ratio": 0.965721115783858,
+            "tiny_units": [],
+            "compressed_units": [],
+            "expanded_units": [
+              28
+            ],
+            "length_cap": false
+          },
+          {
+            "chunk": "chunk_25",
+            "tempo_ratio": 1.091299677765843,
+            "tiny_units": [
+              1
+            ],
+            "compressed_units": [
+              1,
+              2
+            ],
+            "expanded_units": [
+              3
+            ],
+            "length_cap": false
+          }
+        ],
+        "limitation": "Forced alignment and complete input coverage do not certify all lyrics were sung correctly."
+      },
+      "outputs": {
+        "mix": {
+          "wav": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9800000190734863,
+            "sha256": "a5b5ff40b969de500d527c47b860aacf055421038560fa20b7b00a5c94938194"
+          },
+          "mp3": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9733834266662598,
+            "sha256": "96953ff09bb3655d4c3f4fc01a40f9f43681716a372f124a89d0941d19fdcc76"
+          }
+        },
+        "vocal": {
+          "wav": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9800000190734863,
+            "sha256": "8d6b825c1f36f358193d68291bf401c3a5f5c95fd0dba623cc03eb5ce6561831"
+          },
+          "mp3": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9803630113601685,
+            "sha256": "53a2512a7db88e253a1ae28bb25213b41a094749fbb9c06a6318f6df2d678975"
+          }
+        },
+        "natural": {
+          "wav": {
+            "seconds": 260.81589583333334,
+            "peak": 0.9799998998641968,
+            "sha256": "e22ec7ad607b8330a26e95c095d8537d8698df2e55ca96df95d2b301a4b1963a"
+          },
+          "mp3": {
+            "seconds": 260.81589583333334,
+            "peak": 0.979621946811676,
+            "sha256": "8014d6f0d48c94f07bd74695a2c221cd358932431dcec6d742481bb7b2272e22"
+          }
+        }
+      }
+    },
+    "vr": {
+      "verification": {
+        "all_score_units_submitted_once": true,
+        "lyric_units": 601,
+        "original_lyric_lines": 36,
+        "chunks": 26,
+        "no_generation_length_caps": true,
+        "no_nonfinite_or_clipped_samples": true,
+        "source_clock_length_preserved": true,
+        "lyric_body_unchanged_by_joins": true,
+        "tempo_ratio_range": [
+          0.8995948694864355,
+          1.110032362459556
+        ],
+        "unresolved_source_pitch_units": 12,
+        "alignment_flags": [
+          {
+            "chunk": "chunk_00",
+            "tempo_ratio": 0.9731543624161072,
+            "tiny_units": [
+              8
+            ],
+            "compressed_units": [],
+            "expanded_units": [],
+            "length_cap": false
+          },
+          {
+            "chunk": "chunk_20",
+            "tempo_ratio": 0.9637760581488451,
+            "tiny_units": [],
+            "compressed_units": [],
+            "expanded_units": [
+              28
+            ],
+            "length_cap": false
+          },
+          {
+            "chunk": "chunk_24",
+            "tempo_ratio": 1.110032362459556,
+            "tiny_units": [
+              1
+            ],
+            "compressed_units": [],
+            "expanded_units": [],
+            "length_cap": false
+          },
+          {
+            "chunk": "chunk_25",
+            "tempo_ratio": 1.091299677765843,
+            "tiny_units": [
+              1,
+              2
+            ],
+            "compressed_units": [
+              1,
+              2
+            ],
+            "expanded_units": [
+              3
+            ],
+            "length_cap": false
+          }
+        ],
+        "limitation": "Forced alignment and complete input coverage do not certify all lyrics were sung correctly."
+      },
+      "outputs": {
+        "mix": {
+          "wav": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9800000190734863,
+            "sha256": "7fcd23f9843896d87f8b24ab9c424f86a1540b4b988f75c7d0d8ee07e056b526"
+          },
+          "mp3": {
+            "seconds": 308.1066666666667,
+            "peak": 0.9894455075263977,
+            "sha256": "d95a4b79ddb5a8c8e4a2a71597c1152d14bc82590f9832287dca8a29b5ba9bfc"
+          }
+        },
+        "vocal": {
+          "wav": {
+            "seconds": 308.1066666666667,
+            "peak": 0.780458927154541,
+            "sha256": "acd45cb589f757c6ef57313dfeafe64ce61f9bb717f79e0333fd85f1cf4d92bf"
+          },
+          "mp3": {
+            "seconds": 308.1066666666667,
+            "peak": 0.7797273993492126,
+            "sha256": "7732591d361ae9624122110b9299198cae79858faf866b5f221ba9049d7a83c8"
+          }
+        },
+        "natural": {
+          "wav": {
+            "seconds": 260.96,
+            "peak": 0.9800000190734863,
+            "sha256": "b9debb40e60065e4086722d4eac00b2e62c88fd8838f84766fb1d53292d41fdb"
+          },
+          "mp3": {
+            "seconds": 260.96,
+            "peak": 0.979167103767395,
+            "sha256": "29a6df612113d7158d271e0bd7c2836978d6b29c71b54515afce1b857f6d8a60"
+          }
+        }
+      }
+    }
+  },
+  "score_quality": {
+    "status": "checked",
+    "annotation_chunks": 36,
+    "lyric_units": 601,
+    "notes": 1007,
+    "conditioning_errors": 0,
+    "source_clock_seconds": 308.1066666666667,
+    "unrecognized_low_energy_segments": [
+      {
+        "line_index": 0,
+        "start_seconds": 8.36,
+        "end_seconds": 9.379999999999999,
+        "rms": 0.02419506365781698
+      },
+      {
+        "line_index": 1,
+        "start_seconds": 12.86,
+        "end_seconds": 13.899999999999999,
+        "rms": 0.02394692285732491
+      }
+    ],
+    "unknown_pitch_units": 12,
+    "unknown_pitch_units_over_80ms": 4,
+    "heldout_reference_comparison": {
+      "lines": 39,
+      "covered_lines": 39,
+      "reference_characters": 467,
+      "edits": 33,
+      "character_difference_rate": 0.07066381156316917,
+      "limitation": "Comparison to prior source-verified pseudo labels within time windows; not independent ground truth"
+    },
+    "pitch_estimator_agreement": {
+      "notes": 668,
+      "median_absolute_semitones": 0.08086013793945312,
+      "duration_weighted_within_half_semitone": 0.9091590084303557,
+      "duration_weighted_within_one_semitone": 0.9486411456570591,
+      "limitation": "GAME note centers compared with RMVPE median F0 over central 60% of each note; estimator agreement, not accuracy"
+    },
+    "listening_quality_certified": false
+  },
+  "unresolved": {
+    "suspected_outro_false_positives_seconds": [
+      [
+        274.88,
+        278.96
+      ],
+      [
+        282.52,
+        288.02
+      ],
+      [
+        291.56,
+        292.44
+      ]
+    ],
+    "unknown_pitch_units": 12,
+    "unknown_pitch_units_over_80ms": 4,
+    "full_song_human_verified_score_available": false,
+    "listening_quality_certified": false
+  },
+  "engineering_fixes": [
+    "bounded ASR slices with sample coverage checks",
+    "lyric gaps usable despite instrumental bleed",
+    "context-aware short phrase planning",
+    "complete lyric endpoints define placement, including unknown-pitch units",
+    "single sustained syllable supported",
+    "independent non-lyric fades when incoming phrase starts at its first phone",
+    "failed stages have explicit failed state"
+  ],
+  "scope": "One full held-out song plus regression tests; not a claim of universal song coverage or annotation accuracy"
+}

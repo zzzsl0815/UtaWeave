@@ -1,0 +1,9 @@
+{
+  "repo": "../vendor/seed-vc",
+  "python": "../.venv-svc/bin/python",
+  "steps": 30,
+  "cfg": 0.7,
+  "fp16": true,
+  "assets": "../models/svc",
+  "seed": 20261027
+}

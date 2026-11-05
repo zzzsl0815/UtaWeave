@@ -2,7 +2,6 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from contextlib import redirect_stdout, nullcontext
 
 from .score import import_legacy, save, validate
 
@@ -10,6 +9,10 @@ from .score import import_legacy, save, validate
 def main():
     parser = argparse.ArgumentParser(description='UtaWeave: audio to score to singing; Japanese experimental baseline.')
     commands = parser.add_subparsers(dest='command', required=True)
+    web = commands.add_parser('serve', help='Open the local MIDI/song-to-vocal workflow interface')
+    web.add_argument('--config', type=Path, required=True)
+    web.add_argument('--port', type=int, default=8770)
+    web.add_argument('--bind', default='127.0.0.1')
     legacy = commands.add_parser('import-legacy', help='Import an existing full-song experiment without changing it')
     legacy.add_argument('--manifest', type=Path, required=True)
     legacy.add_argument('--timeline', choices=['source-seconds','source-samples'], required=True)
@@ -25,37 +28,28 @@ def main():
     render.add_argument('--config', type=Path, required=True)
     render.add_argument('--out', type=Path, required=True)
     render.add_argument('--python', default=sys.executable, help='Python with numpy and soundfile for the orchestrator')
+    convert = commands.add_parser('convert', help='Convert existing VR guides with Seed-VC')
+    convert.add_argument('--config', type=Path, required=True)
+    convert.add_argument('--guide', type=Path, nargs='+', required=True)
+    convert.add_argument('--reference-run', type=Path, required=True)
+    convert.add_argument('--out', type=Path, required=True)
+    report = commands.add_parser('report', help='Rebuild a full-song listening page without regenerating audio')
+    report.add_argument('--manifest', type=Path, required=True)
     separate = commands.add_parser('separate', help='Prepare target-song vocal and accompaniment stems')
     separate.add_argument('--audio', type=Path, required=True)
     separate.add_argument('--runtime-config', type=Path, required=True)
     separate.add_argument('--out', type=Path, required=True)
     separate.add_argument('--no-dereverb', action='store_true')
-    reference = commands.add_parser('prepare-reference', help='Separate, cut and score a song for human reference selection')
-    reference.add_argument('--audio', type=Path, required=True)
-    reference.add_argument('--runtime-config', type=Path, required=True)
-    reference.add_argument('--metadata', type=Path)
+    reference = commands.add_parser('prepare-reference', help='Provide a clip or automatically split, score and select from a song')
+    inputs = reference.add_mutually_exclusive_group(required=True)
+    inputs.add_argument('--clip', type=Path, help='Already cut vocal clip; preserved unchanged')
+    inputs.add_argument('--audio', type=Path, help='Full source audio for automatic separation and selection')
+    inputs.add_argument('--from-run', type=Path, help='Reuse cached separation for automatic selection')
+    reference.add_argument('--runtime-config', type=Path, help='Required with --audio')
+    reference.add_argument('--policy', type=Path, help='Optional automatic quality/duration policy overrides')
     reference.add_argument('--out', type=Path, required=True)
-    reference.add_argument('--top-count', type=int, default=8)
-    reference.add_argument('--no-dereverb', action='store_true')
-    reference.add_argument('--candidate', help='Explicit candidate number/id; bypass interactive input')
-    reference.add_argument('--no-prompt', action='store_true', help='Print candidates and leave an unselected task waiting')
-    reference.add_argument('--json', action='store_true', help='Machine-readable output, without interactive input')
-    choose = commands.add_parser('select-reference', help='Persist a reference explicitly chosen by the user')
-    choose.add_argument('--run', type=Path, required=True)
-    choose.add_argument('--candidate', required=True)
-    choose.add_argument('--manifest-sha256', help='Reject a selection from a different shortlist version')
-    listing = commands.add_parser('list-references', help='Print candidate source times, duration and scores')
-    listing.add_argument('--run', type=Path, required=True)
-    review = commands.add_parser('review-reference', help='Choose a reference in an interactive terminal')
-    review.add_argument('--run', type=Path, required=True)
-    state = commands.add_parser('reference-status', help='Report the persistent reference-selection gate')
+    state = commands.add_parser('reference-status', help='Verify a frozen reference or its latest output pointer')
     state.add_argument('--run', type=Path, required=True)
-    waiting = commands.add_parser('wait-reference', help='Wait for explicit selection in another terminal')
-    waiting.add_argument('--run', type=Path, required=True)
-    waiting.add_argument('--timeout',type=float)
-    export = commands.add_parser('export-references', help='Export only shortlisted WAVs for local listening')
-    export.add_argument('--run',type=Path,required=True)
-    export.add_argument('--out',type=Path,required=True)
     fetch = commands.add_parser('fetch-netease', help='Import a requested song through a configured local API bridge')
     fetch.add_argument('--url', required=True)
     fetch.add_argument('--bridge-script', type=Path, required=True)
@@ -63,6 +57,20 @@ def main():
     fetch.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     try:
+        if args.command == 'serve':
+            from .web.server import serve
+            serve(args.config, args.bind, args.port)
+            return
+        if args.command == 'report':
+            from .rendering.report import build_report
+            print(json.dumps(dict(report=str(build_report(args.manifest))), ensure_ascii=False))
+            return
+        if args.command == 'convert':
+            from .voice_conversion.convert import convert
+            run = convert(args.config, [dict(id=f'guide_{i:03d}', audio=str(path), title=path.stem)
+                for i, path in enumerate(args.guide)], args.reference_run, args.out)
+            print(json.dumps(dict(run=str(run), report=str(run/'index.html')), ensure_ascii=False))
+            return
         if args.command == 'validate-conditioning':
             from .conditioning import require_conditioning
             print(json.dumps(require_conditioning(json.loads(args.score.read_text())),ensure_ascii=False,indent=2))
@@ -94,55 +102,17 @@ def main():
             raise SystemExit(result.returncode)
         if args.command == 'prepare-reference':
             from .references import prepare_reference
-            from .terminal_review import list_candidates, terminal_review, candidate_by_number
-            from .selection import select_reference, reference_status
-            with redirect_stdout(sys.stderr) if args.json else nullcontext():
-                result = prepare_reference(args.audio,args.out,args.runtime_config,args.metadata,args.top_count,not args.no_dereverb)
-            if not args.json:
-                list_candidates(args.out)
-            if args.candidate:
-                row = candidate_by_number(args.out,args.candidate)
-                select_reference(args.out,row['id'],method='cli')
-            elif result['reference_state']!='ready' and not args.no_prompt and not args.json and sys.stdin.isatty():
-                terminal_review(args.out,show_table=False)
-            status = reference_status(args.out)
-            if args.json:
-                print(json.dumps(dict(**status,candidates=result['candidates']),ensure_ascii=False,indent=2))
-            elif status['state']=='ready':
-                print('已确认音色参考: '+status['selection']['candidate_id'])
-                print('选择记录: '+str(args.out.resolve()/'reference.selected.json'))
-            else:
-                print('等待选择。稍后运行 select-reference --run RUN --candidate 编号，即可保存并续跑。')
-            if status['state']!='ready':
-                raise SystemExit(3 if status['state']=='awaiting_reference_selection' else 2)
+            from .selection import require_reference
+            run = prepare_reference(args.out, clip=args.clip, audio=args.audio, from_run=args.from_run,
+                runtime_path=args.runtime_config, policy=json.loads(args.policy.read_text()) if args.policy else None)
+            print(json.dumps(dict(run=str(run), selection=require_reference(run)), ensure_ascii=False, indent=2))
             return
-        if args.command == 'select-reference':
-            from .selection import select_reference
-            from .terminal_review import candidate_by_number
-            row = candidate_by_number(args.run,args.candidate)
-            print(json.dumps(select_reference(args.run,row['id'],expected_manifest_sha256=args.manifest_sha256),ensure_ascii=False,indent=2))
-            return
-        if args.command=='list-references':
-            from .terminal_review import list_candidates
-            list_candidates(args.run)
-            return
-        if args.command=='review-reference':
-            from .terminal_review import terminal_review
-            result = terminal_review(args.run)
-            if result is None:
-                raise SystemExit(3)
-            print('已保存音色参考: '+result['candidate_id'])
-            return
-        if args.command in ['reference-status','wait-reference']:
-            from .selection import reference_status, wait_reference
-            result = wait_reference(args.run,args.timeout) if args.command=='wait-reference' else reference_status(args.run)
-            print(json.dumps(result,ensure_ascii=False,indent=2))
-            if args.command=='reference-status' and result['state']!='ready':
-                raise SystemExit(3 if result['state']=='awaiting_reference_selection' else 2)
-            return
-        if args.command=='export-references':
-            from .terminal_review import export_candidates
-            print(json.dumps(export_candidates(args.run,args.out),ensure_ascii=False,indent=2))
+        if args.command == 'reference-status':
+            from .selection import reference_status
+            result = reference_status(args.run)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result['state'] != 'ready':
+                raise SystemExit(2)
             return
         if args.command == 'fetch-netease':
             from .netease import fetch_reference_song

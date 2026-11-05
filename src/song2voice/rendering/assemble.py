@@ -16,6 +16,55 @@ from .runtime import ffmpeg_binary
 SR=48000
 
 
+def fit_timeline(wave, start, first_phone, last_phone, samples):
+    """Trim generated edge padding outside the source clock, never lyric audio."""
+    if first_phone < 0 or last_phone > samples/SR:
+        raise ValueError('Aligned lyrics leave the source timeline; check score boundaries')
+    left=max(0,-start);right=max(0,start+len(wave)-samples)
+    if left+right>=len(wave):
+        raise ValueError('Generated phrase does not overlap the source timeline')
+    end=len(wave)-right if right else len(wave)
+    return wave[left:end],max(0,start),dict(left_seconds=left/SR,right_seconds=right/SR,
+        policy='Only non-lyric samples outside the source clock are removed')
+
+
+def protect_join(left, right):
+    """Join outside both lyric bodies, even when one phrase has no preroll."""
+    left_end=left['start']+len(left['wave']);right_start=right['start']
+    if left_end<=right_start:
+        return dict(left=left['id'],right=right['id'],overlap=False,
+            generated_quiet_gap_seconds=(right_start-left_end)/SR,removed_energy_fraction=0.)
+    safe_lo=round((left['last']+.025)*SR)
+    safe_hi=round((right['first']-.025)*SR)
+    if safe_hi-safe_lo<round(.012*SR):
+        raise ValueError(f"No phone-safe join between {left['id']} and {right['id']}")
+    lo=max(right_start,safe_lo);hi=min(left_end,safe_hi)
+    shared=hi-lo>=round(.012*SR)
+    if not shared:
+        # A phrase can begin exactly at its first phone. There is then no
+        # shared non-lyric overlap, but the preceding phrase's tail can still
+        # fade inside the lyric gap, without touching the incoming phone.
+        lo,hi=safe_lo,safe_hi
+    candidates=np.arange(lo+240,hi-240,240,dtype=int)
+    if not len(candidates):candidates=np.array([(lo+hi)//2])
+    def energy(clip,t):
+        a=max(0,t-clip['start']-240);b=min(len(clip['wave']),t-clip['start']+240)
+        return float(np.mean(clip['wave'][a:b]**2)) if a<b else 0.
+    cut=int(min(candidates,key=lambda t:energy(left,t)+energy(right,t)))
+    fade=min(240,(hi-lo)//4)
+    for clip,outgoing in [(left,True),(right,False)]:
+        a=int(np.clip(cut-fade-clip['start'],0,len(clip['wave'])))
+        b=int(np.clip(cut+fade-clip['start'],0,len(clip['wave'])))
+        if outgoing:clip['weights'][b:]=0.
+        else:clip['weights'][:a]=0.
+        if b>a:
+            phase=(np.arange(a,b)+clip['start']-(cut-fade))/(2*fade-1)*np.pi/2
+            clip['weights'][a:b]*=(np.cos(phase) if outgoing else np.sin(phase))**2
+    return dict(left=left['id'],right=right['id'],overlap=True,join_seconds=cut/SR,
+        protected_lyric_gap=[left['last'],right['first']],fade_seconds=fade/SR,
+        method='shared_crossfade' if shared else 'independent_non_lyric_fades')
+
+
 def ffmpeg(args):
     subprocess.run([ffmpeg_binary(),'-hide_banner','-loglevel','error','-y','-threads','2',*map(str,args)],check=True)
 
@@ -50,36 +99,15 @@ def main(out):
     human,_=sf.read(human_file,dtype='float32');assert len(human)==len(inst)
     for clip in prepared:
         wave,sr=sf.read(clip['path'],dtype='float32');assert sr==SR and np.isfinite(wave).all()
-        a=clip['alignment'];clip.update(wave=wave,weights=np.ones(len(wave),dtype='float32'),
-            start=round(a['placement_seconds']*SR),
-            first=a['placement_seconds']+a['first_lyric_start']/a['tempo_ratio'],
-            last=a['placement_seconds']+a['last_lyric_end']/a['tempo_ratio'])
-        assert clip['start']>=0 and clip['start']+len(wave)<=len(inst)
+        a=clip['alignment']
+        first=a['placement_seconds']+a['first_lyric_start']/a['tempo_ratio']
+        last=a['placement_seconds']+a['last_lyric_end']/a['tempo_ratio']
+        wave,start,trim=fit_timeline(wave,round(a['placement_seconds']*SR),first,last,len(inst))
+        clip['edge_audit']['timeline_trim']=trim
+        clip.update(wave=wave,weights=np.ones(len(wave),dtype='float32'),start=start,first=first,last=last)
     joins=[]
     for left,right in zip(prepared,prepared[1:]):
-        left_end=left['start']+len(left['wave']);right_start=right['start']
-        if left_end<=right_start:
-            joins.append(dict(left=left['id'],right=right['id'],overlap=False,
-                generated_quiet_gap_seconds=(right_start-left_end)/SR,removed_energy_fraction=0.))
-            continue
-        lo=max(right_start,round((left['last']+.025)*SR))
-        hi=min(left_end,round((right['first']-.025)*SR))
-        if hi-lo<round(.012*SR):
-            raise ValueError(f"No phone-safe join between {left['id']} and {right['id']}")
-        candidates=np.arange(lo+240,hi-240,240,dtype=int)
-        if not len(candidates): candidates=np.array([(lo+hi)//2])
-        costs=[]
-        for t in candidates:
-            li=t-left['start'];ri=t-right['start']
-            costs.append(float(np.mean(left['wave'][max(0,li-240):li+240]**2))+
-                float(np.mean(right['wave'][max(0,ri-240):ri+240]**2)))
-        cut=int(candidates[int(np.argmin(costs))]);fade=min(240,(hi-lo)//4)
-        li=cut-left['start'];ri=cut-right['start']
-        left['weights'][li+fade:]=0.;right['weights'][:ri-fade]=0.
-        left['weights'][li-fade:li+fade]=np.cos(np.linspace(0,np.pi/2,2*fade))**2
-        right['weights'][ri-fade:ri+fade]=np.sin(np.linspace(0,np.pi/2,2*fade))**2
-        joins.append(dict(left=left['id'],right=right['id'],overlap=True,join_seconds=cut/SR,
-            protected_lyric_gap=[left['last'],right['first']],fade_seconds=fade/SR))
+        joins.append(protect_join(left,right))
     track=np.zeros(len(inst),dtype='float32');edge_audits=[]
     for clip in prepared:
         wave=clip['wave'];weights=clip['weights']
@@ -94,7 +122,12 @@ def main(out):
         for w in c['words']:
             if any(p>0 for p in w['pitch']):mask[round(w['start']*SR):round(w['end']*SR)]=True
     dry_gain=min(1.,.98/max(float(np.max(abs(track))),1e-8));track*=dry_gain
-    vocal_gain=float(np.sqrt(np.mean(human[mask]**2))/max(np.sqrt(np.mean(track[mask]**2)),1e-8))
+    if manifest['protocol'].get('source_mode') == 'midi':
+        # MIDI supplies timing, not a source singer's loudness. The silent
+        # timeline buffer is never used as an acoustic target or gain reference.
+        vocal_gain=1.
+    else:
+        vocal_gain=float(np.sqrt(np.mean(human[mask]**2))/max(np.sqrt(np.mean(track[mask]**2)),1e-8))
     mix=inst+track[:,None]*vocal_gain
     mix_gain=min(1.,.98/max(float(np.max(abs(mix))),1e-8));mix*=mix_gain
     natural_audio=np.concatenate(natural);natural_audio*=min(1.,.98/max(float(np.max(abs(natural_audio))),1e-8))

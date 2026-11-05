@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "seed-vc",
+      "repo": "Plachtaa/seed-vc",
+      "revision": "51383efd921027683c89e5348211d93ff12ac2a8"
+    }
+  ],
+  "assets": [
+    {
+      "path": "bigvgan-44k/bigvgan_generator.pt",
+      "url": "https://huggingface.co/nvidia/bigvgan_v2_44khz_128band_512x/resolve/95a9d1dcb12906c03edd938d77b9333d6ded7dfb/bigvgan_generator.pt",
+      "sha256": "d9fe7ec6bd0b44ed9d66973d5012d8181c1570b01e5c72df51973e241dccd357",
+      "size": 489041291
+    },
+    {
+      "path": "bigvgan-44k/config.json",
+      "url": "https://huggingface.co/nvidia/bigvgan_v2_44khz_128band_512x/resolve/95a9d1dcb12906c03edd938d77b9333d6ded7dfb/config.json",
+      "sha256": "65b7f487bfaf15256056a75f6667ef5f640214c981922a111927873705ea4ddb",
+      "size": 1403
+    },
+    {
+      "path": "campplus/campplus_cn_common.bin",
+      "url": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common/resolve/013c18884dffb82846cf472dd06dd4a08d97e2cd/campplus_cn_common.bin",
+      "sha256": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8",
+      "size": 28036335
+    },
+    {
+      "path": "rmvpe/rmvpe.pt",
+      "url": "https://modelscope.cn/models/Soul-AILab/SoulX-Singer-Preprocess/resolve/e0a1bd14eb7e5ccf0129a7a33d3ce3d08157cd79/rmvpe/rmvpe.pt",
+      "sha256": "6d62215f4306e3ca278246188607209f09af3dc77ed4232efdd069798c4ec193",
+      "size": 181184272
+    },
+    {
+      "path": "seed/DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth",
+      "url": "https://huggingface.co/Plachta/Seed-VC/resolve/257283f9f41585055e8f858fba4fd044e5caed6e/DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth",
+      "sha256": "42aef93ffe65857c840d270252fa040f7ba04514945ec460f3ac1ac2a96de684",
+      "size": 820865494
+    },
+    {
+      "path": "seed/config_dit_mel_seed_uvit_whisper_base_f0_44k.yml",
+      "url": "https://huggingface.co/Plachta/Seed-VC/resolve/257283f9f41585055e8f858fba4fd044e5caed6e/config_dit_mel_seed_uvit_whisper_base_f0_44k.yml",
+      "sha256": "ff86f343b08c2def405f075022eeb10dafba23c4eda36d151010f4ca6d7a1a0a",
+      "size": 2408
+    },
+    {
+      "path": "whisper-small/config.json",
+      "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/config.json",
+      "sha256": "e6a2b489da1b5aed65a8eb8d1e7466fa867ad5643a8bc138ba708bd56b2875c4",
+      "size": 1967
+    },
+    {
+      "path": "whisper-small/model.safetensors",
+      "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/model.safetensors",
+      "sha256": "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
+      "size": 966995080
+    },
+    {
+      "path": "whisper-small/preprocessor_config.json",
+      "url": "https://huggingface.co/openai/whisper-small/resolve/973afd24965f72e36ca33b3055d56a652f456b4d/preprocessor_config.json",
+      "sha256": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666",
+      "size": 184990
+    }
+  ]
+}

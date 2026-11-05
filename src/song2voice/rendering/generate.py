@@ -77,6 +77,19 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None):
         node = dict(time=t, quiet=[a, b], width=b-a)
         if index not in nodes or b-a > nodes[index]['width']:
             nodes[index] = node
+    # A separated stem can retain instrumental bleed above the absolute quiet
+    # threshold. Use sufficiently wide aligned lyric gaps as secondary cuts;
+    # every lyric unit remains protected, and assembly rechecks generated phones.
+    for index, (left, right) in enumerate(zip(words, words[1:]), 1):
+        a, b = left['end']+.035, right['start']-.035
+        if b-a < .08 or index in nodes:
+            continue
+        lo, hi = math.ceil(a/.01), math.floor(b/.01)
+        if hi <= lo: continue
+        frame = lo+int(np.argmin(rms[lo:hi]))
+        nodes[index] = dict(time=(frame+.5)*.01, quiet=[a,b], width=b-a,
+            evidence='aligned_lyric_gap_with_possible_instrumental_bleed',
+            rms=float(rms[frame]), secondary_cut=True)
     seconds = len(mono)/sr
     nodes[len(words)] = dict(time=seconds, quiet=[words[-1]['end'], seconds], width=seconds-words[-1]['end'])
     best = {0: (0., [])}
@@ -88,6 +101,13 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None):
             duration = words[right-1]['end']-words[left]['start']
             if duration > maximum: continue
             cost = .3/max(.1, nodes[right]['width']) if right < len(words) else 0
+            anchors=sum(w['end']-w['start'] >= .03 and any(p > 0 for p in w['pitch'])
+                        for w in words[left:right])
+            # Prefer neighboring context for very short/sparse phrases. This is
+            # a planning preference, so a genuine isolated sustained vowel is
+            # still representable and checked by the same alignment/tempo gates.
+            if anchors < 2 or duration < .5: cost += 250
+            if nodes[right].get('secondary_cut'): cost += 15
             if right < len(words) and words[right-1]['line_index'] == words[right]['line_index']:
                 cost += 1000 if whole_lines else 10
             if whole_lines:
@@ -111,7 +131,9 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None):
     assert [(w['line_index'], w['word_index']) for c in chunks for w in c['words']] == [(w['line_index'], w['word_index']) for w in words]
     return dict(chunks=chunks, chunk_count=len(chunks), original_phrase_count=len(score),
         lyric_unit_count=len(words), all_lyrics_covered_once=True, max_content_seconds=maximum,
-        source_seconds=seconds, quiet_rms_threshold=.005, minimum_quiet_seconds=.25)
+        source_seconds=seconds, quiet_rms_threshold=.005, minimum_quiet_seconds=.25,
+        sparse_phrase_policy='Prefer merging <500ms or fewer than two clock-anchor units; retain all score units',
+        secondary_cut_policy='Aligned lyric gap >=150ms with 35ms margins; generated phone bodies rechecked during assembly')
 
 
 def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoint, stems):
@@ -144,7 +166,7 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     if (out/'recipe.json').exists() and read(out/'recipe.json')!=recipe:
         raise ValueError('Input, settings or code changed; use a new render directory')
     write(out/'recipe.json',recipe);recipe_sha=sha(out/'recipe.json')
-    if (out/'manifest.json').exists() and read(out/'manifest.json')['status']=='complete':
+    if (out/'manifest.json').exists() and read(out/'manifest.json')['status'] in ('generated', 'complete'):
         prior=read(out/'manifest.json')
         if prior.get('recipe_sha256')!=recipe_sha:raise ValueError('Completed render has a different recipe')
         for result in prior['results']:
@@ -154,7 +176,7 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     manifest = dict(status='loading', target=target, reference=selected, plan=split,
         checkpoint=str(checkpoint), checkpoint_sha256=sha(checkpoint/'lora_weights.safetensors'),
         score_sha256=sha(target['score']), stems=str(stems), results=[],recipe_sha256=recipe_sha,
-        protocol=dict(native_eos=True, min_len=2, cfg_value=2., inference_timesteps=10,
+        protocol=dict(source_mode=runtime().get('source_mode', 'song'), native_eos=True, min_len=2, cfg_value=2., inference_timesteps=10,
             batch_size=batch_size, seed_base=runtime().get('seed',20261020), lora_scales=runtime().get('lora_scales',{}),
             quality_action='flag_only', label_changes=False,
             known_unresolved_pitch_units=sum(len(w['word_indices']) for r in preflight for w in r['warnings'] if w['code']=='unknown_lyric_pitch')))

@@ -13,7 +13,7 @@ def penalty(a):
     # The score never changes. This chooses generated audio, not a reading.
     tiny_voiced=sum(a['units'][i]['has_measured_or_inferred_pitch'] for i in a['tiny_units'])
     return (10000*int(a['warning_length_cap'] or a['warning_tempo_outside_limit'])+
-        20*len(a['compressed_units'])+10*tiny_voiced+
+        20*(len(a['compressed_units'])+len(a.get('expanded_units',[])))+10*tiny_voiced+
         5*int(a['warning_tempo_outside_preferred'])+5*abs(math.log(a['tempo_ratio']))+
         2*(1-a['agreement']))
 
@@ -50,8 +50,8 @@ def main(parent,retries,out):
         lyric_units=sum(len(r['units']) for r in selected_alignments),chunks=len(selected_alignments),
         english_phone_count=sum(r['english_phones'] for r in selected_alignments),
         warnings=[dict(chunk=r['id'],tempo_ratio=r['tempo_ratio'],tiny_units=r['tiny_units'],
-            compressed_units=r['compressed_units'],length_cap=r['warning_length_cap']) for r in selected_alignments
-            if r['warning_tempo_outside_preferred'] or r['tiny_units'] or r['compressed_units'] or r['warning_length_cap']]))
+            compressed_units=r['compressed_units'],expanded_units=r.get('expanded_units',[]),length_cap=r['warning_length_cap']) for r in selected_alignments
+            if r['warning_tempo_outside_preferred'] or r['tiny_units'] or r['compressed_units'] or r.get('expanded_units') or r['warning_length_cap']]))
     shutil.copyfile(parent/'inputs.pt',out/'inputs.pt')
     for a in audits:
         if len(a['candidates'])>1:print(a,flush=True)

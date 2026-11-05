@@ -12,6 +12,7 @@ import yaml
 
 from .generate import read, write, progress
 from .runtime import runtime
+from .audio import clock_transform
 
 
 def main(out):
@@ -55,24 +56,21 @@ def main(out):
                 source_start=w['start'],source_end=w['end'],
                 generated_start=float(spans[indices[0],0]),generated_end=float(spans[indices[-1],1]),
                 has_measured_or_inferred_pitch=any(p>0 for p in w['pitch'])))
-        # Zero-pitch 10 ms alignment artifacts remain in the audio and score,
-        # but do not serve as clock anchors for time stretching.
-        anchors=[u for u in units if u['has_measured_or_inferred_pitch'] and
-            u['source_end']-u['source_start']>=.03 and u['generated_end']-u['generated_start']>=.03]
-        assert len(anchors)>=2
-        first,last=anchors[0],anchors[-1]
-        generated_span=last['generated_end']-first['generated_start']
-        source_span=last['source_end']-first['source_start']
-        ratio=generated_span/source_span
-        placement=first['source_start']-first['generated_start']/ratio
+        # Map the complete lyric span. Missing pitch and tiny source units
+        # cannot exempt audible generated phones from the placement bounds.
+        try:
+            clock=clock_transform(units)
+        except ValueError as error:
+            raise ValueError(f"{chunk['id']}: {error}") from error
+        ratio=clock['tempo_ratio']
         tiny=[i for i,u in enumerate(units) if u['generated_end']-u['generated_start']<.015]
         compressed=[i for i,u in enumerate(units) if u['has_measured_or_inferred_pitch'] and
             u['source_end']-u['source_start']>.08 and u['generated_end']-u['generated_start']<.03]
+        expanded=[i for i,u in enumerate(units) if u['source_end']-u['source_start']<.03 and
+            u['generated_end']-u['generated_start']>.08]
         record=dict(id=chunk['id'],agreement=float(aligned.agreement[0]),units=units,
             first_lyric_start=units[0]['generated_start'],last_lyric_end=units[-1]['generated_end'],
-            clock_anchor_first=dict(line_index=first['line_index'],word_index=first['word_index']),
-            clock_anchor_last=dict(line_index=last['line_index'],word_index=last['word_index']),
-            tempo_ratio=ratio,placement_seconds=placement,tiny_units=tiny,compressed_units=compressed,
+            **clock,tiny_units=tiny,compressed_units=compressed,expanded_units=expanded,
             english_phones=sum(p.startswith('en/') for p in phones),
             warning_tempo_outside_preferred=not .85<ratio<1.18,
             warning_tempo_outside_limit=not .8<ratio<1.25,
@@ -86,9 +84,9 @@ def main(out):
         lyric_units=sum(len(r['units']) for r in audits),chunks=len(audits),
         english_phone_count=sum(r['english_phones'] for r in audits),
         warnings=[dict(chunk=r['id'],tempo_ratio=r['tempo_ratio'],tiny_units=r['tiny_units'],
-            compressed_units=r['compressed_units'],length_cap=r['warning_length_cap'])
+            compressed_units=r['compressed_units'],expanded_units=r['expanded_units'],length_cap=r['warning_length_cap'])
             for r in audits if r['warning_tempo_outside_preferred'] or r['tiny_units'] or
-                r['compressed_units'] or r['warning_length_cap']]))
+                r['compressed_units'] or r['expanded_units'] or r['warning_length_cap']]))
     progress(out,'aligned',chunks=len(audits))
 
 

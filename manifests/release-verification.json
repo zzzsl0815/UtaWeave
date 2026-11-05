@@ -1,0 +1,128 @@
+{
+  "date": "2026-11-05",
+  "version": "0.2.0",
+  "pipeline": "VR Japanese LoRA guide -> native Seed-VC -> realignment -> assembled audio",
+  "unit_tests": {
+    "run": 80,
+    "passed": 80,
+    "skipped": 0
+  },
+  "build": {
+    "wheel": true,
+    "sdist": true,
+    "packaged_ui_and_player_assets": true,
+    "packaged_seed_asset_lock": true,
+    "isolated_wheel_cli_import": true,
+    "fusion_modules_absent": true
+  },
+  "web_checks": {
+    "midi": {
+      "duration": 6,
+      "seek": true,
+      "track_switch_preserves_paused_position": true,
+      "reference_survives_poll": true,
+      "mobile_overflow": false,
+      "js_errors": []
+    },
+    "song": {
+      "duration": 35.76,
+      "seek": true,
+      "track_switch_preserves_paused_position": true,
+      "reference_survives_poll": true,
+      "mobile_overflow": false,
+      "js_errors": []
+    },
+    "lyric_midi_export_preserves_original_note_ticks": true,
+    "optional_accompaniment_sample_count_verified": true
+  },
+  "netease": {
+    "full_audio_download_verified": true,
+    "lyric_fetch_verified": true,
+    "original_song_gpu_test_used_35_76_second_excerpt_of_download": true
+  },
+  "gpu_smoke": {
+    "midi": {
+      "seconds": 6.0,
+      "verification": {
+        "all_score_units_submitted_once": true,
+        "lyric_units": 8,
+        "original_lyric_lines": 1,
+        "chunks": 1,
+        "no_generation_length_caps": true,
+        "no_nonfinite_or_clipped_samples": true,
+        "source_clock_length_preserved": true,
+        "lyric_body_unchanged_by_joins": true,
+        "tempo_ratio_range": [
+          0.97,
+          0.97
+        ],
+        "unresolved_source_pitch_units": 0,
+        "alignment_flags": [],
+        "limitation": "Forced alignment and complete input coverage do not certify all lyrics were sung correctly."
+      },
+      "output_hashes": {
+        "mix": {
+          "wav": "df6ad8979549d0acf2a737bae7840b5d171051d4c8c3345ed7c911bfa20c7660",
+          "mp3": "a07c2d08357369a3053a212bf562f497cade47dbe9c6ac718e2716879f7a376b"
+        },
+        "vocal": {
+          "wav": "df6ad8979549d0acf2a737bae7840b5d171051d4c8c3345ed7c911bfa20c7660",
+          "mp3": "a07c2d08357369a3053a212bf562f497cade47dbe9c6ac718e2716879f7a376b"
+        },
+        "natural": {
+          "wav": "161d9d4c41e066a62366515f31f529029e40c6141457503933a556729b1ad650",
+          "mp3": "9b377da87e735d59bcb7873ae688234cf8b93bb876aaf00b23917a70682903d1"
+        }
+      }
+    },
+    "song": {
+      "seconds": 35.76,
+      "verification": {
+        "all_score_units_submitted_once": true,
+        "lyric_units": 22,
+        "original_lyric_lines": 3,
+        "chunks": 3,
+        "no_generation_length_caps": true,
+        "no_nonfinite_or_clipped_samples": true,
+        "source_clock_length_preserved": true,
+        "lyric_body_unchanged_by_joins": true,
+        "tempo_ratio_range": [
+          0.895470383275261,
+          0.9999999999999996
+        ],
+        "unresolved_source_pitch_units": 0,
+        "alignment_flags": [],
+        "limitation": "Forced alignment and complete input coverage do not certify all lyrics were sung correctly."
+      },
+      "output_hashes": {
+        "mix": {
+          "wav": "57c1ae121b16b36506862f3c81ccdb4ef97dd5c8d7fe797ce0edeaa1cfb9451b",
+          "mp3": "454386b91c1b2c21e2d48fe07c3a31a63dfbc2600b485c0cb0612051d0d49b7c"
+        },
+        "vocal": {
+          "wav": "808b7121e2dd3cf89222045e319e8ecb8d7b02eb7a24ba8ff035856104aeec02",
+          "mp3": "967e6087ad0daf91d0afa2817af0160d08991fc745dad4ecf85ffcecd517e652"
+        },
+        "natural": {
+          "wav": "12dfef5530829e5e7a1af27bc5ae14b9f24eb7f7ebbdee871b966158b7ebe544",
+          "mp3": "c941b6a43a10bbb846bed2552e578640ab2b331bc120956b5615920de276380a"
+        }
+      }
+    }
+  },
+  "cleanup": {
+    "freed_gib": 42.2,
+    "preserved_vr_tensor_files": 80,
+    "all_vr_sha256_unchanged": true,
+    "source_and_annotated_dataset_files_checked": 921875,
+    "dataset_path_size_mtime_mismatches": 0,
+    "dataset_check_was_not_full_content_hashing": true
+  },
+  "limitations": [
+    "Browser checks used local headless Chromium, not every browser",
+    "Fresh-machine GPU environment installation was not repeated",
+    "New UI end-to-end inference tests used short examples, not an additional full-length song",
+    "Automatic MIDI lyric allocation is an editable draft; note/lyric alignment requires review",
+    "Audio numerical validity and forced alignment do not certify listening quality"
+  ]
+}

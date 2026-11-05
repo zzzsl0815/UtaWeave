@@ -1,11 +1,10 @@
-"""Persistent human-selection gate shared by the terminal CLI and pipeline."""
+"""Persistent, verified reference snapshots for human and automatic choices."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
 import tempfile
-import time
 import os
 
 from .score import sha
@@ -57,8 +56,19 @@ def inside(run, relative):
     return path
 
 
-def reference_status(run):
+def resolve_reference_run(run):
     run = Path(run).resolve()
+    if not (run/'reference_candidates.json').exists() and (run/'latest.json').exists():
+        value = json.loads((run/'latest.json').read_text())['run']
+        target = (run/Path(value)).resolve()
+        if not target.is_relative_to(run) or target == run:
+            raise ValueError('Reference latest pointer leaves its output directory')
+        run = target
+    return run
+
+
+def reference_status(run):
+    run = resolve_reference_run(run)
     manifest_path = run/'reference_candidates.json'
     manifest = json.loads(manifest_path.read_text())
     result = dict(state='awaiting_reference_selection', selection=None,
@@ -91,30 +101,17 @@ def reference_status(run):
 
 
 def require_reference(run):
-    run = Path(run).resolve()
+    run = resolve_reference_run(run)
     status = reference_status(run)
     if status['state']!='ready':
-        raise SelectionRequired(status.get('error','Awaiting human reference selection'))
+        raise SelectionRequired(status.get('error','Reference preparation has not completed'))
     result = dict(status['selection'])
     result['audio'] = str((run/result['audio']).resolve())
     return result
 
 
-def wait_reference(run, timeout=None):
-    deadline = None if timeout is None else time.monotonic()+timeout
-    while True:
-        status = reference_status(run)
-        if status['state']=='ready':
-            return require_reference(run)
-        if status['state']=='invalid_reference':
-            raise SelectionRequired(status['error'])
-        if deadline is not None and time.monotonic()>=deadline:
-            raise TimeoutError('Still awaiting human reference selection')
-        time.sleep(.25)
-
-
 def select_reference(run, candidate_id, *, expected_manifest_sha256=None,
-                     expected_candidate_sha256=None, method='cli'):
+                     expected_candidate_sha256=None, method='cli', decision=None):
     run = Path(run).resolve()
     with selection_lock(run):
         manifest_path = run/'reference_candidates.json'
@@ -146,11 +143,16 @@ def select_reference(run, candidate_id, *, expected_manifest_sha256=None,
                 temporary.unlink(missing_ok=True)
         if sha(target)!=candidate['sha256']:
             raise ValueError('Frozen reference file changed')
-        value = dict(schema_version=1,status='human_selected',candidate_id=candidate_id,
+        if decision is not None and (not isinstance(decision, dict) or not decision.get('strategy')):
+            raise ValueError('Automatic selection requires a recorded decision strategy')
+        value = dict(schema_version=1,status=('provided_clip' if method == 'provided_clip' else
+            'automatic_selected' if decision is not None else 'human_selected'),candidate_id=candidate_id,
             source_sha256=manifest['source']['audio_sha256'],manifest_sha256=manifest_hash,
             audio=str(target.relative_to(run)),sha256=candidate['sha256'],score=candidate['score'],
             processing=candidate.get('processing'),
             source_window=dict(start_seconds=candidate['start_seconds'],end_seconds=candidate['end_seconds']))
+        if decision is not None:
+            value['decision'] = decision
         if (run/'reference_recipe.json').exists():
             value['preprocessing_recipe_sha256'] = sha(run/'reference_recipe.json')
         path = run/'reference.selected.json'
@@ -163,5 +165,5 @@ def select_reference(run, candidate_id, *, expected_manifest_sha256=None,
             atomic_json(history/(sha(path)[:16]+'.json'),previous)
         value.update(confirmed_at=datetime.now(timezone.utc).isoformat(),confirmed_via=method)
         atomic_json(path,value)
-        atomic_json(run/'progress.json',dict(status='ready',selection='human_selected',candidate_id=candidate_id))
+        atomic_json(run/'progress.json',dict(status='ready',selection=value['status'],candidate_id=candidate_id))
         return value

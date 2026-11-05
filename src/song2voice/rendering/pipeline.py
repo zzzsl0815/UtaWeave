@@ -1,4 +1,4 @@
-"""Run the archived short-phrase render, alignment, retry and export baseline."""
+"""VR guide generation → Seed-VC timbre → realignment and full-song export."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -10,10 +10,10 @@ import subprocess
 import sys
 
 from .generate import read, write, sha
-from ..selection import require_reference
+from ..selection import require_reference, selection_lock, resolve_reference_run
 
 PATH_KEYS = ('score', 'reference_run', 'checkpoint', 'stems', 'base_model',
-             'vocalrender_repo', 'tifa_repo', 'tifa_weights')
+             'vocalrender_repo', 'tifa_repo', 'tifa_weights', 'guide_reference_run', 'seed_vc_config')
 
 
 def resolve_config(config_file):
@@ -30,23 +30,40 @@ def resolve_config(config_file):
     for key in ('render_python', 'align_python', 'ffmpeg'):
         value = config.get(key, 'ffmpeg' if key == 'ffmpeg' else sys.executable)
         if '/' in value and not Path(value).is_absolute():
-            value = str((config_file.parent/value).resolve())
+            value = os.path.abspath(config_file.parent/value)
         executable = shutil.which(value)
         if not executable:
             raise ValueError('Executable not found: '+key)
         config[key] = executable
-    require_reference(config['reference_run'])
+    for key in ('reference_run', 'guide_reference_run'):
+        config[key] = str(resolve_reference_run(config[key]))
+        require_reference(config[key])
     if config.get('batch_size', 4) < 1:
         raise ValueError('batch_size must be positive')
     return config
 
 
+def guide_recipe(config, recipe):
+    guide_config = {k:v for k,v in config.items() if k not in ('reference_run', 'seed_vc_config')}
+    guide_config['reference_run'] = guide_config.pop('guide_reference_run')
+    dependencies = ('rendering/generate.py', 'rendering/runtime.py', 'rendering/audio.py',
+                    'rendering/align.py', 'rendering/retry.py', 'rendering/select.py',
+                    'conditioning.py', 'selection.py')
+    identity = dict(config=guide_config, assets={k:v for k,v in recipe.items()
+        if k.endswith('sha256') and k not in ('code_sha256', 'reference_sha256')},
+        code={k:recipe['code_sha256'][k] for k in dependencies})
+    return guide_config, identity
+
+
 def main(config_file, out):
     config = resolve_config(config_file)
     package = Path(__file__).resolve().parent
-    sources = [*package.glob('*.py'), *package.parent.glob('*.py')]
+    sources = list(package.parent.rglob('*.py'))
     reference = require_reference(config['reference_run'])
-    recipe = dict(config=config,
+    from ..voice_conversion.convert import runtime_recipe
+    seed_runtime = runtime_recipe(config['seed_vc_config'])
+    guide_reference = require_reference(config['guide_reference_run'])
+    recipe = dict(config=config, seed_vc=seed_runtime, guide_reference_sha256=guide_reference['sha256'],
         code_sha256={str(p.relative_to(package.parent)): sha(p) for p in sorted(sources)},
         score_sha256=sha(config['score']), reference_sha256=sha(reference['audio']),
         checkpoint_sha256=sha(Path(config['checkpoint'])/'lora_weights.safetensors'),
@@ -71,9 +88,15 @@ def main(config_file, out):
         shutil.copyfile(source,snapshot/relative)
     runtime_file = run/'runtime.local.json'
     write(runtime_file,config)
-    target_file, reference_file = run/'target.local.json', run/'reference.local.json'
-    write(target_file,dict(score=config['score'],score_sha256=recipe['score_sha256']))
-    write(reference_file,dict(run=config['reference_run']))
+    guide_config, guide_identity = guide_recipe(config, recipe)
+    guide_signature = hashlib.sha256(json.dumps(guide_identity, sort_keys=True).encode()).hexdigest()[:16]
+    guide_root = out/'guides'/guide_signature
+    guide_root.mkdir(parents=True, exist_ok=True)
+    guide_runtime = guide_root/'runtime.local.json'
+    write(guide_runtime, guide_config)
+    target_file, reference_file = guide_root/'target.local.json', guide_root/'reference.local.json'
+    write(target_file, dict(score=config['score'], score_sha256=recipe['score_sha256']))
+    write(reference_file, dict(run=config['guide_reference_run']))
     env = dict(os.environ)
     env['UTAWEAVE_RENDER_CONFIG'] = str(runtime_file)
     source_root = str(package.parents[1])
@@ -94,25 +117,34 @@ def main(config_file, out):
         write(run/'pipeline_status.json',state)
 
     try:
-        base = run/'generation'
-        arguments = ['--out',base,'--target',target_file,'--reference',reference_file,
-                     '--checkpoint',config['checkpoint'],'--stems',config['stems'],
-                     '--batch-size',config.get('batch_size',4)]
-        if config.get('whole_lines',True):
-            arguments.append('--whole-lines')
-        stage('generate',vr,'generate',arguments)
-        if read(base/'manifest.json')['status'] != 'complete':
-            stage('align',aligner,'align',['--out',base])
-        alignment = read(base/'generated_alignment.json')
-        needs_retry = any(a['compressed_units'] or a['warning_length_cap'] or
-                          a['warning_tempo_outside_preferred'] for a in alignment)
-        selected = base
-        if needs_retry:
-            retries,selected = run/'retries',run/'selected'
-            stage('retry',vr,'retry',['--parent',base,'--out',retries])
-            stage('align_retries',aligner,'align',['--out',retries])
-            stage('select',vr,'select',['--parent',base,'--retries',retries,'--out',selected])
+        env['UTAWEAVE_RENDER_CONFIG'] = str(guide_runtime)
+        with selection_lock(guide_root):
+            base = guide_root/'generation'
+            arguments = ['--out',base,'--target',target_file,'--reference',reference_file,
+                         '--checkpoint',config['checkpoint'],'--stems',config['stems'],
+                         '--batch-size',config.get('batch_size',4)]
+            if config.get('whole_lines',True):
+                arguments.append('--whole-lines')
+            stage('generate',vr,'generate',arguments)
+            if not (base/'alignment_verification.json').exists():
+                stage('align',aligner,'align',['--out',base])
+            alignment = read(base/'generated_alignment.json')
+            needs_retry = any(a['compressed_units'] or a.get('expanded_units') or a['warning_length_cap'] or
+                              a['warning_tempo_outside_preferred'] for a in alignment)
+            selected = base
+            if needs_retry:
+                retries,selected = guide_root/'retries',guide_root/'selected'
+                if not (retries/'generated_alignment.json').exists():
+                    stage('retry',vr,'retry',['--parent',base,'--out',retries])
+                    stage('align_retries',aligner,'align',['--out',retries])
+                stage('select',vr,'select',['--parent',base,'--retries',retries,'--out',selected])
+        env['UTAWEAVE_RENDER_CONFIG'] = str(runtime_file)
+        guide = selected
+        selected = run/'voiced'
+        stage('convert', seed_runtime['config']['python'], 'convert', ['--parent', guide, '--out', selected])
         if read(selected/'manifest.json')['status'] != 'complete':
+            if not (selected/'alignment_verification.json').exists():
+                stage('align_converted', aligner, 'align', ['--out', selected])
             stage('assemble',vr,'assemble',['--out',selected])
         manifest = read(selected/'manifest.json')
         import numpy as np
@@ -130,7 +162,10 @@ def main(config_file, out):
             if mp3_sr != sr or not np.isfinite(decoded).all() or np.max(abs(decoded)) >= 1.:
                 raise ValueError('Invalid MP3 export: '+key)
             checks.append(dict(kind=key,seconds=len(wav)/sr,decodable=True))
+        from .report import build_report
+        report = build_report(selected/'manifest.json')
         state.update(status='rendered',completed_at=datetime.now(timezone.utc).isoformat(),
+            report=str(report),
             final_manifest=str(selected/'manifest.json'),
             remaining_flags=read(selected/'alignment_verification.json')['warnings'],exports=checks,
             conclusion='Numerical and export checks passed; listening quality has not been certified.')
@@ -138,6 +173,9 @@ def main(config_file, out):
         write(out/'latest.json',state)
         print(json.dumps(state,ensure_ascii=False,indent=2),flush=True)
     except Exception as error:
+        for details in state['stages'].values():
+            if details['status'] == 'running':
+                details.update(status='failed',error=str(error))
         state.update(status='failed',error=str(error))
         write(run/'pipeline_status.json',state)
         raise

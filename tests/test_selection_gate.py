@@ -14,7 +14,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from song2voice.score import sha
 from song2voice.selection import (reference_status,require_reference,select_reference,
                                  SelectionRequired,StaleSelection)
-from song2voice.terminal_review import terminal_review,export_candidates
 
 
 def make_task(run):
@@ -72,40 +71,6 @@ class SelectionGate(unittest.TestCase):
             self.assertEqual(reference_status(run)['state'],'invalid_reference')
             with self.assertRaises(SelectionRequired):require_reference(run)
 
-    def test_terminal_number_and_shortlist_export(self):
-        with tempfile.TemporaryDirectory() as folder:
-            run = Path(folder)
-            make_task(run)
-            with patch('sys.stdin.isatty',return_value=True),patch('builtins.input',return_value='2'),redirect_stdout(io.StringIO()):
-                selected = terminal_review(run)
-            self.assertEqual(selected['candidate_id'],'c2')
-            export_candidates(run,run/'shortlist.zip')
-            with zipfile.ZipFile(run/'shortlist.zip') as archive:
-                self.assertEqual(len([n for n in archive.namelist() if n.endswith('.wav')]),2)
-                self.assertEqual(archive.read('02_reference.wav'),(run/'candidates/candidate_2.wav').read_bytes())
-
-    def test_headless_waits_then_explicit_number_resumes_without_models(self):
-        with tempfile.TemporaryDirectory() as folder:
-            run = Path(folder)
-            make_task(run)
-            runtime = run/'runtime.json'
-            runtime.write_text('{}')  # No ML runtime or weights needed for a frozen task.
-            package = Path(__file__).resolve().parents[1]/'src'
-            env = os.environ.copy()
-            env['PYTHONPATH'] = str(package)
-            command = [sys.executable,'-m','song2voice','prepare-reference',
-                '--audio',str(run/'source.flac'),'--runtime-config',str(runtime),
-                '--out',str(run),'--json']
-            waiting = subprocess.run(command,env=env,capture_output=True,text=True)
-            self.assertEqual(waiting.returncode,3,waiting.stderr)
-            self.assertEqual(json.loads(waiting.stdout)['state'],'awaiting_reference_selection')
-            self.assertFalse((run/'reference.selected.json').exists())
-            chosen = subprocess.run(command+['--candidate','1'],env=env,capture_output=True,text=True)
-            self.assertEqual(chosen.returncode,0,chosen.stderr)
-            self.assertEqual(json.loads(chosen.stdout)['state'],'ready')
-            resumed = subprocess.run(command,env=env,capture_output=True,text=True)
-            self.assertEqual(resumed.returncode,0,resumed.stderr)
-            self.assertEqual(json.loads(resumed.stdout)['selection']['candidate_id'],'c1')
 
 
 if __name__=='__main__':unittest.main()

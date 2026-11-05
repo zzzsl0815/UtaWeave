@@ -1,5 +1,7 @@
 # 运行指南
 
+图形界面的两种输入与操作说明见 [可视化工作台](WEB_UI.md)。以下为命令行流程。
+
 这是已在本机运行的研究基线，不是已验证所有平台的安装器。推荐 Linux、Python 3.12、NVIDIA CUDA GPU；实测 GPU 显存为 32 GB。先安装支持 `rubberband` 滤镜和 `libmp3lame` 编码的 FFmpeg，再准备模型。模型路径和 Python 环境路径必须按自己的机器修改。
 
 ## 1. 准备环境
@@ -7,7 +9,9 @@
 核心工具：
 
 ```bash
-pip install -e '.[audio]'
+python3.12 -m venv .venv
+.venv/bin/pip install -e '.[audio,dev]'
+source .venv/bin/activate
 python scripts/bootstrap_upstreams.py
 ```
 
@@ -58,26 +62,27 @@ utaweave separate --audio inputs/target.flac \
 
 输出 `stems/vocal_native.wav`、`stems/instrumental.wav` 和 `stems/vocal_for_reference.wav`。最后一项是用于识别的单声道人声；默认经过除混响。源录音的时间轴保留。无需处理混响时可使用 `--no-dereverb`。
 
-## 4. 音色参考
+## 4. 音色参考与 Seed-VC
+
+按 [Seed-VC 环境说明](VOICE_CONVERSION.md) 准备 `.venv-svc`、9 个资产和 `configs/seed_vc.local.json`。
 
 ```bash
+# 自动从完整音源分离、分割，平衡音质和有效人声时长
 utaweave prepare-reference --audio inputs/reference-song.flac \
   --runtime-config configs/reference_runtime.local.json --out runs/voice-reference
+# 或直接提供片段，两条命令选一条
+utaweave prepare-reference --clip inputs/voice-clip.wav --out runs/voice-reference
 ```
 
-程序在终端打印候选原曲起止时间、时长、处理方式和 SingMOS 分数，再输入编号选择。默认候选为连续 6–8 秒，同时比较分离原人声与去混响版本。评分帮助挑选音质，不代表音色模仿准确率。
-
-远程无交互终端：
+VR 仍需一个固定提示音频作为导唱上下文，使用同一个片段准备 `runs/guide-reference` 即可。它与最终目标音色分开设置；切换目标时不必更换导唱提示。参考详情见 [参考准备](REFERENCE_PREPARATION.md)。
 
 ```bash
-utaweave prepare-reference --audio inputs/reference-song.flac \
-  --runtime-config configs/reference_runtime.local.json \
-  --out runs/voice-reference --no-prompt
-utaweave list-references --run runs/voice-reference
-utaweave select-reference --run runs/voice-reference --candidate 1
+utaweave prepare-reference --clip inputs/guide-prompt.wav --out runs/guide-reference
+utaweave reference-status --run runs/guide-reference
+utaweave reference-status --run runs/voice-reference
 ```
 
-等待选择时退出码为 3。选定片段被保存为独立 WAV 和校验记录；文件发生变化会拒绝复用。用户也可以导出候选本地试听，详见 [参考选择](REFERENCE_PREPARATION.md)。
+`guide-prompt.wav` 是固定的干净人声片段，可与手动目标参考使用同一文件；自动模式已选出的片段也可复用。目标参考的自动筛选使用 SingMOS 与有效人声时长的平衡规则，不依赖失败融合实验的训练参考选择器。
 
 ## 5. 纯音频自动标注
 
@@ -95,18 +100,20 @@ utaweave validate-conditioning runs/target-score/score.vr.json
 
 输出 `score.vr.json`、`notes.mid` / `notes.csv`、识别、语言分流、对齐和覆盖记录。此模式拒绝外部歌词、罗马音和 LRC 字段。英文支持仍是实验性的。
 
+已有合格的 `score.vr.json` 可以跳过自动标注。普通 MIDI 还缺歌词、音素及对应关系，不能直接替代此文件；字段说明见 [Vocal2Midi 集成](VOCAL2MIDI_INTEGRATION.md)。命令行的原曲模式仍需要同一时间轴的人声和伴奏 stems，用于边界规划、时长及混音增益参考。可视化工作台另提供 MIDI＋歌词入口：生成明确标记的时间轴缓冲，使用独立的响度策略，不要求原始人声。
+
 `validate-score` 对应旧统一乐谱对象；`validate-conditioning` 对应当前自动标注生成的 VR 条目数组。两个格式尚未合并，不能互换命令。
 
 ## 6. 渲染、自动重试与整曲输出
 
-修改 `configs/render.local.json`，指定乐谱、`reference_run`、目标 `stems`、模型路径以及运行环境。
+修改 `configs/render.local.json`，指定乐谱、目标音色 `reference_run`、固定导唱提示 `guide_reference_run`、`seed_vc_config`、目标 `stems`、模型路径以及运行环境。
 
 ```bash
 utaweave render --config configs/render.local.json --out runs/render \
   --python .venv-render/bin/python
 ```
 
-执行短唱句规划 → 原生停止生成 → TiFA 对齐 → 对异常段额外采样两个候选 → 固定规则选取 → 有限变速、衔接和混音。最多 14.5 秒的歌词内容；无法完整覆盖且安全切开时会报错，不强制超长整曲生成。
+执行短唱句规划 → 原生停止生成 → TiFA 对齐 → 对异常段额外采样两个候选 → 固定规则选取 → Seed-VC 换声 → 再次 TiFA 对齐 → 有限变速、衔接和混音。最多 14.5 秒的歌词内容；无法完整覆盖且安全切开时会报错，不强制超长整曲生成。
 
 最终位置由 `runs/render/latest.json` 的 `final_manifest` 指定，对应目录内有：
 
@@ -114,5 +121,33 @@ utaweave render --config configs/render.local.json --out runs/render \
 - `audio/vocal.wav` / `.mp3`：原曲时间轴纯人声。
 - `audio/natural.wav` / `.mp3`：不做变速的原始生成串联版，不对应原曲完整时钟。
 - 配置、源码摘要、参考与权重哈希、分段规划、对齐警告和衔接审计。
+- `index.html` 和 `listening_player.js`：可拖动进度条、按唱句跳转的试听页。混音与纯人声切换保留位置，原速串联版单独播放。
 
-相同输入和代码可复用已缓存的生成；修改模型、设置或代码会产生新的运行签名。数值检查成功不等于演唱准确或音质合格，最终仍需试听。
+导唱缓存与目标音色分离；相同输入和代码可复用已缓存的生成；修改模型、设置或代码会产生新的运行签名。数值检查成功不等于演唱准确或音质合格，最终仍需试听。
+
+## 7. 打开试听页
+
+`runs/render/latest.json` 中的 `report` 给出实际页面位置。用其父目录作为服务根目录：
+
+```bash
+python -m song2voice.report_server --directory runs/render/RUN_ID/voiced --port 8768
+```
+
+本机打开 `http://127.0.0.1:8768/`。远程机器需要 SSH 转发，例如在自己电脑运行 `ssh -L 8768:127.0.0.1:8768 USER@SERVER`；已有端口转发则使用它提供的地址。服务支持 HTTP Range，音频默认使用 MP3 预览，WAV 可单独下载。
+
+旧结果只有音频时可重建页面，不重新推理：
+
+```bash
+utaweave report --manifest runs/render/RUN_ID/voiced/manifest.json
+```
+
+## 8. 复用、更换声音与排错
+
+- 换目标音色：只改 `reference_run`，保留 `guide_reference_run`、乐谱、VR 设置和 `--out` 根目录，复用导唱缓存。
+- 只有已有导唱：运行 [convert](VOICE_CONVERSION.md#复用已有导唱)，无需再标注或生成 VR。
+- 任务失败：检查该 run 的 `pipeline_status.json` 与对应阶段日志。修复依赖后重跑相同命令；输入、配置或实现变更会产生新的运行签名。
+- 无法安全切句、时长超限或对齐比例异常：先检查源乐谱、分离结果及标注，修正后重新运行。不要把自动检查通过理解为歌词已经人工校对。
+- 参考缺失或校验失败：运行 `reference-status`。不手改哈希、不将长录音冒充已选片段；重新执行 `prepare-reference`。
+- 音频显示 0:00 或不能跳转：确认网页和音频来自同一 HTTP 服务，使用本项目 `report_server`，检查音频请求是否返回 200/206。不要直接双击 HTML 或把整个数据目录作为公开服务根目录。
+
+仓库只提供推理主流程与已发布 VR LoRA 的训练参数记录，不包含融合训练命令。新的训练不会随推理自动启动。

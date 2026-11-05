@@ -25,6 +25,7 @@ python scripts/verify_models.py --only ja-r64-e5 ja-r32-e45 ja-r32-e5
 | `models/kashi-g2p-onnx` | 含汉字日语文本的 G2P | [Kashi G2P](https://github.com/Xiantaidu/kashi-g2p)；当前本地 v4 包的确切发布版本尚未核对，需手工提供匹配包 |
 | 分离器 / 去混响器 | 分离人声 | 根据 [SingCrawl](https://github.com/pymaster17/SingCrawl) 配置并下载，模型不在本仓库 |
 | SingMOS / wav2vec2 SSL | 音色候选评分 | 按 [SingMOS](https://github.com/South-Twilight/SingMOS) 官方说明准备 |
+| `models/svc` | Seed-VC 44.1 kHz、Whisper-small、RMVPE、CAMPPlus、BigVGAN | `python scripts/bootstrap_svc.py`，9 个模型/配置文件固定在 [svc.lock.json](../src/song2voice/voice_conversion/svc.lock.json) |
 
 **尚未完全自动化的部分：** Kashi v4 本地包与源项目发布资产的版本对应关系尚未核对；分离、去混响及 SingMOS 资产仍需手动准备。本次本地归档保留了文件索引和校验值，不能据此声称全新机器上已完成无人工步骤的复现。
 
@@ -53,3 +54,5 @@ python scripts/verify_models.py --root models --only vocalrender-pro qwen3-asr r
 ```
 
 基础模型共约 18 GB；分离、SingMOS 及环境另占空间。模型、数据、缓存不进入普通 Git。模型许可证与字典条款见对应上游；代码许可证不能自动覆盖所有模型资产。
+
+Seed-VC 锁定资产另约 2.32 GiB。保留 LoRA 不能替代 VR 基础模型；同样，Seed-VC 推理需要锁定的全部 9 个资产，不能只保留 DiT 权重。清理时应保留这些运行依赖、所用环境、冻结参考和数据集，删除可重建缓存或旧生成结果。

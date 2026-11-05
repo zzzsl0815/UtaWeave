@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -17,11 +18,31 @@ import subprocess
 
 from .score import save, sha
 from .vocal2midi import UPSTREAM_COMMIT, use_upstream, aligned_words_to_annotation
-from .vocal2midi_worker import bounded_session_threads
+from contextlib import contextmanager
 
 NON_LYRICS = {'SP', 'AP', 'EP', 'sil', 'pau', 'br'}
 FORBIDDEN_INPUTS = {'reference_moras', 'reference_audit', 'source_intervals',
                     'original_lyrics', 'lyrics_json', 'lyrics_file', 'romalrc', 'lrc'}
+
+
+@contextmanager
+def bounded_session_threads(count):
+    """Configure upstream-created CPU sessions in this isolated worker only.
+
+    Several graph bundles otherwise each create a full machine-sized pool.
+    Restore the factory immediately after synchronous model construction;
+    audio processing and all neural graph operations remain upstream.
+    """
+    import onnxruntime as ort
+    original = ort.InferenceSession
+    def create(path, sess_options=None, *args, **kwargs):
+        options = sess_options if sess_options is not None else ort.SessionOptions()
+        options.intra_op_num_threads = count
+        options.inter_op_num_threads = 1
+        return original(path, options, *args, **kwargs)
+    ort.InferenceSession = create
+    try: yield
+    finally: ort.InferenceSession = original
 
 
 def validate_audio_only_config(config):
@@ -56,6 +77,48 @@ def language_spans(words, duration):
     boundaries = [0.] + [(a['end']+b['start'])/2 for a,b in zip(groups, groups[1:])] + [duration]
     return [dict(language=g['language'], start=a, end=b)
             for g,a,b in zip(groups,boundaries,boundaries[1:])]
+
+
+def bound_audio_chunks(chunks, sr, minimum=5., maximum=10., splitter=None):
+    """Bound upstream default segments without losing or duplicating samples."""
+    if not 0 < minimum <= maximum <= 10:
+        raise ValueError('ASR slice bounds must satisfy 0 < min <= max <= 10 seconds')
+    if splitter is None:
+        from inference.API.slicer_api import _sliding_window_split
+        splitter = _sliding_window_split
+    result = []
+    for chunk in chunks:
+        wave = chunk['waveform']
+        if len(wave)/sr <= maximum:
+            result.append(chunk)
+            continue
+        pieces = splitter(wave, sr, minimum, maximum, -30., 2048, 512)
+        cursor = 0
+        for piece in pieces:
+            start = int(piece['offset']*sr)
+            count = len(piece['waveform'])
+            if start != cursor or not 0 < count <= round(maximum*sr):
+                raise ValueError('Slicer changed coverage or exceeded ASR input capacity')
+            # Slice by the original sample clock instead of relying on copied data.
+            result.append(dict(offset=chunk['offset']+cursor/sr, waveform=wave[cursor:cursor+count]))
+            cursor += count
+        if cursor != len(wave):
+            raise ValueError('Slicer lost samples')
+    return result
+
+
+def check_asr_capacity(samples, sample_rate, fixed_samples, asr_sample_rate):
+    if isinstance(fixed_samples, int) and math.ceil(samples*asr_sample_rate/sample_rate) > fixed_samples:
+        raise ValueError('ASR input exceeds model capacity; split before recognition, never truncate')
+
+
+def record_empty_asr(row, rms, typical_rms):
+    """Retain a review record for weak unrecognized residue; never discard strong singing."""
+    if rms > .2*typical_rms:
+        raise ValueError(f'Upstream ASR produced no lyrics for active chunk {row["line_index"]}')
+    return dict(row, status='unrecognized_low_energy', rms=rms, typical_rms=typical_rms,
+                action='audio retained for review; no invented lyric or pitch',
+                limitation='Low energy and empty ASR do not prove absence of singing')
 
 
 class MixedG2P:
@@ -108,7 +171,8 @@ def main(config):
             print('Already complete:',out,flush=True); return
     torch.set_num_threads(config.get('cpu_threads',4))
     wave, sr = load_audio(config['audio'], 44100)
-    chunks = slice_audio_with_custom_bounds(wave, sr, 'default', min_len_sec=5., max_len_sec=10.)
+    native_chunks = slice_audio_with_custom_bounds(wave, sr, 'default', min_len_sec=5., max_len_sec=10.)
+    chunks = bound_audio_chunks(native_chunks, sr)
     native_dir = out/'native_chunks'; native_dir.mkdir(exist_ok=True)
     rows = []
     for i, chunk in enumerate(chunks):
@@ -116,6 +180,12 @@ def main(config):
         rows.append(dict(index=i,audio=str(path),start_seconds=float(chunk['offset']),
                          end_seconds=float(chunk['offset'])+len(chunk['waveform'])/sr))
     save(out/'native_chunks.json',rows)
+    save(out/'slicing_audit.json',dict(original_chunks=len(native_chunks),bounded_chunks=len(chunks),
+        maximum_seconds=max(len(c['waveform'])/sr for c in chunks),
+        original_retained_samples=sum(len(c['waveform']) for c in native_chunks),
+        bounded_retained_samples=sum(len(c['waveform']) for c in chunks),
+        policy='Retain upstream default voiced intervals; split long intervals at low-energy boundaries'))
+    typical_rms=float(np.quantile([np.sqrt(np.mean(c['waveform'].astype(float)**2)) for c in chunks], .75))
     print('UPSTREAM_SLICES',len(rows),flush=True)
 
     # This is the same Qwen3-ASR model family as upstream; Transformers/CUDA
@@ -146,7 +216,7 @@ def main(config):
     mixed_rows = []
     for row in detection:
         langs = text_languages(row['raw_text'])
-        if not langs: raise ValueError(f'Empty/unsupported ASR output for chunk {row["index"]}')
+        if not langs: langs=[config.get('language','ja')]
         if len(langs)>1:
             (routing/f'chunk_{row["index"]}.txt').write_text(row['raw_text'],encoding='utf-8')
             # Same audio samples as the native slicer; a hard link is sufficient.
@@ -157,7 +227,7 @@ def main(config):
         mixed_pred, _ = run_tifa_fa(tifa,routing,language='mixed',g2p_pipeline=MixedG2P(g2p)) if mixed_rows else ({},{})
     final_rows = []; route_audit = []
     for row in detection:
-        langs = text_languages(row['raw_text']); duration=row['end_seconds']-row['start_seconds']
+        langs = text_languages(row['raw_text']) or [config.get('language','ja')]; duration=row['end_seconds']-row['start_seconds']
         if len(langs)==1: spans=[dict(language=langs[0],start=0.,end=duration)]
         else:
             if f'chunk_{row["index"]}' not in mixed_pred:
@@ -172,6 +242,7 @@ def main(config):
                 audio=str(path),start_seconds=row['start_seconds']+a/sr,end_seconds=row['start_seconds']+b/sr))
         route_audit.append(dict(row,spans=spans))
     save(out/'language_routing.json',route_audit)
+    empty_rows=[]
     for begin in range(0,len(final_rows),4):
         group=final_rows[begin:begin+4]
         english=[r for r in group if r['language']=='en']
@@ -185,6 +256,8 @@ def main(config):
                 chars, logs=process_asr_to_phonemes([raw],[index],directory,'en',None,lyric_output_mode='word')
                 row.update(text=raw['text'],raw_asr=raw,chars=chars.get(f'chunk_{index}',[]),upstream_log=logs)
             else:
+                info=sf.info(row['audio'])
+                check_asr_capacity(info.frames, info.samplerate, romaji.session.get_inputs()[0].shape[-1], romaji.sample_rate)
                 raw=romaji.transcribe([row['audio']],batch_size=1)[0]
                 chars,logs=process_asr_to_phonemes([raw],[index],directory,'ja',None,
                         lyric_output_mode='kana',use_asr_phonemes=True,
@@ -194,9 +267,14 @@ def main(config):
                 lab=directory/f'chunk_{index}.lab'
                 if lab.exists():(directory/f'chunk_{index}.txt').write_bytes(lab.read_bytes())
                 row.update(text=raw['text'],raw_asr=raw,chars=chars.get(f'chunk_{index}',[]),upstream_log=logs)
-            if not row['chars']: raise ValueError(f'Upstream ASR produced no lyrics for chunk {index}')
+            if not row['chars']:
+                samples,_=sf.read(row['audio'],dtype='float32')
+                empty_rows.append(record_empty_asr(row,float(np.sqrt(np.mean(samples.astype(float)**2))),typical_rms))
+                save(out/'unrecognized_segments.json',empty_rows)
         save(out/'recognition.json',final_rows)
         print('FINAL_ASR',min(begin+4,len(final_rows)),'/',len(final_rows),flush=True)
+    final_rows=[r for r in final_rows if r['chars']]
+    if not final_rows: raise ValueError('No recognized lyric segments; cannot render a song')
     del asr;gc.collect();torch.cuda.empty_cache()
     predictions={};displays={}
     for language in ['ja','en']:
@@ -245,6 +323,7 @@ def main(config):
     save(out/'manifest.json',dict(status='exported',source='Vocal2Midi audio-only',
         native_chunks=len(rows),exported_chunks=len(entries),languages=dict(Counter(r['language'] for r in final_rows)),
         references_used=False,lyrics_input_used=False,lrc_input_used=False,
+        unrecognized_low_energy_segments=len(empty_rows),unrecognized_audio_preserved=True,
         score_sha256=sha(out/'score.vr.json'),quality_status='not_assessed',
         runtime_note='Qwen3-ASR Transformers/CUDA; upstream Japanese/English TiFA/GAME code'))
 

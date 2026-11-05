@@ -24,57 +24,6 @@ def use_upstream(repo):
     sys.path.insert(0, str(repo))
 
 
-def require_asr_capacity(samples, sample_rate, fixed_samples, asr_sample_rate=16000):
-    """Upstream prepare_batch truncates fixed-width inputs; forbid that loss."""
-    if samples <= 0 or sample_rate <= 0:
-        raise ValueError('Invalid audio clock')
-    resampled_samples = math.ceil(samples * asr_sample_rate / sample_rate)
-    if fixed_samples is not None and resampled_samples > fixed_samples:
-        raise ValueError('Audio exceeds RomajiASR input capacity; split before recognition, never truncate')
-
-
-def prepare_recognized_reading(result, temp_dir, index, reference_moras=None):
-    """Reuse upstream normalization/mora joining and write a consistent FA pair.
-
-    At the pinned upstream revision the unmatched direct-ASR .txt contains raw
-    phones ("h a ...") while its .lab contains moras ("ha ..."). TiFA prefers
-    .txt and expects words/moras. Set both to the selected mora sequence here,
-    without editing the vendored project or changing its recognition result.
-
-    reference_moras must already be matched by the reference-lyrics adapter;
-    arbitrary unverified text must not be passed as an authoritative reading.
-    """
-    from inference.API.lfa_api import (
-        _normalize_asr_phoneme_token, _phoneme_tokens_to_romaji_moras,
-        _direct_moras_to_display_tokens, process_asr_to_phonemes,
-    )
-    directory = Path(temp_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    phones = [p for t in result.get('phonemes', [])
-              if (p := _normalize_asr_phoneme_token(str(t)))]
-    observed = [m for m in _phoneme_tokens_to_romaji_moras(phones)
-                if m not in {'AP', 'EP', 'SP'}]
-    selected = list(reference_moras) if reference_moras is not None else observed
-    if not selected:
-        raise ValueError('Empty recognition without a matched reference; retain chunk as unresolved')
-    if any(not m or any(c.isspace() for c in m) for m in selected):
-        raise ValueError('Expected individual mora tokens')
-    # Keep the upstream ASR log and display conversion, then enforce the
-    # recognized/verified mora protocol at the forced-aligner boundary.
-    _, logs = process_asr_to_phonemes([result], [index], directory, 'ja', None,
-                                    lyric_output_mode='kana', use_asr_phonemes=True)
-    stem = f'chunk_{index}'
-    text = ' '.join(selected)
-    for suffix in ['.txt', '.lab']:
-        (directory/(stem+suffix)).write_text(text, encoding='utf-8')
-    kana = _direct_moras_to_display_tokens('ja', 'kana', selected)
-    unknown = [m for m, k in zip(selected, kana) if k.isascii()]
-    return dict(raw_asr=result, observed_moras=observed, selected_moras=selected,
-                kana=kana, selected_source='matched_romaji_reference' if reference_moras is not None else 'RomajiASR',
-                unsupported_moras=unknown, upstream_log=logs,
-                compatibility_fix='TiFA .txt and .lab both receive selected mora tokens')
-
-
 def aligned_words_to_annotation(words, notes, duration):
     """Preserve upstream FA units and native-second GAME notes, without MIDI.
 
