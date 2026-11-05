@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let mode = 'song', uploads = {}, current = null, prepared = null, labels = [], loadedJob = null, busy = false;
 let audioContext = null, oscillators = [], pollTimer, melodyTimer;
 let phraseDrafts = new Map(), phraseJob = null, pendingAlignment = null;
+let readingInputMode='romaji', readingEditors=[];
 const stageNames = {queued:'排队中',input:'读取输入',lyrics:'转换读音',separate:'分离人声',annotate:'自动转谱',review:'等待核对乐谱',score:'检查乐谱',reference:'准备音色参考',render:'生成演唱',complete:'生成完成',error:'任务失败',stopped:'任务已停止'};
 const statusNames = {queued:'排队中',running:'进行中',awaiting_score:'待核对',complete:'已完成',failed:'失败',cancelled:'已停止'};
 function notice(message) { $('notice').textContent = message || ''; $('notice').hidden = !message; }
@@ -79,6 +80,46 @@ function showRomaji(node,reading,needsReadingHint='含汉字时，请保存本�
   const result=romanizeReading(reading);
   node.textContent=`罗马音：${result.text || '—'}${result.needsReading?' · '+needsReadingHint:''}`;
 }
+function readingInputHelp(){
+  $('reading-input-help').textContent=readingInputMode==='romaji'?"直接输入 kimi、gakkou 等罗马音，可按拍音加空格。英文用 {tick tack} 包住。n' 明确表示 ん，xtsu 表示小 っ；单个音符仍可填 SP 或 -。下方预览是实际使用的读音。":"按原方式输入日文或英文；字母按英文处理。需要用罗马音输入日语时，请切换上方模式。";
+}
+function createReadingEditor(input,preview,value,{kind,onEdit,onPreview,state}={}){
+  const editor={kind,canonical:value,error:'',mode:readingInputMode};
+  const render=()=>{
+    input.setCustomValidity(editor.error);input.setAttribute('aria-invalid',String(!!editor.error));
+    preview.textContent=editor.error || `将使用：${editor.canonical || '—'}`;preview.classList.toggle('reading-error',!!editor.error);
+    onPreview?.(editor.canonical);
+  };
+  editor.setMode=mode=>{
+    editor.mode=mode;input.value=mode==='romaji'?readingToRomajiInput(editor.canonical):editor.canonical;render();
+  };
+  editor.setCanonical=value=>{editor.canonical=value;editor.error='';editor.setMode(readingInputMode);};
+  editor.snapshot=()=>({raw:input.value,mode:editor.mode,error:editor.error});
+  editor.value=()=>{if(editor.error)throw Error(editor.error);return editor.canonical;};
+  input.maxLength=kind==='note'?256:6000;input.spellcheck=false;input.autocapitalize='off';
+  const convert=()=>{
+    try{
+      const value=editor.mode==='romaji'?romajiToReading(input.value):input.value.trim();
+      if(value.length>(kind==='note'?64:2000))throw Error('转换后的读音太长，请缩短输入。');
+      editor.canonical=value;editor.error='';
+    }catch(error){editor.error=error.message;}
+    render();onEdit?.(editor);
+  };
+  input.addEventListener('input',convert);editor.setMode(readingInputMode);
+  if(state){editor.mode=state.mode;input.value=state.raw;editor.error=state.error || '';render();}
+  readingEditors.push(editor);return editor;
+}
+function requireNoteReadings(){
+  const invalid=readingEditors.find(e=>e.kind==='note'&&e.error);if(invalid)throw Error('有音符的罗马音拼写尚未完成：'+invalid.error);
+}
+$('reading-input-mode').onchange=()=>{
+  const value=$('reading-input-mode').value;
+  if(readingEditors.some(e=>e.error)){notice('请先修正标红的拼写，再切换输入方式。');$('reading-input-mode').value=readingInputMode;return;}
+  readingInputMode=value;readingEditors.forEach(e=>e.setMode(value));
+  for(const draft of phraseDrafts.values())delete draft.inputState;
+  readingInputHelp();
+};
+readingInputHelp();
 function mappingStatus() {
   const missing = labels.filter(v => !v.trim()).length;
   const aligned=prepared?.alignment;
@@ -114,6 +155,7 @@ $('piano-roll').addEventListener('click',e => {
 });
 window.addEventListener('resize',()=>drawRoll());
 function showPrepared(data, saved) {
+  readingEditors=[];
   prepared=data;labels=[...(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels)];setMode(data.mode);
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
   $('score-summary').replaceChildren();
@@ -131,18 +173,21 @@ function showPrepared(data, saved) {
       const cell=document.createElement('td');cell.textContent=text;row.append(cell);
     }
     const cell=document.createElement('td'),input=document.createElement('input');input.id=`note-${i}`;input.value=labels[i];input.maxLength=64;input.setAttribute('aria-label',`第 ${i+1} 个音符的歌词读音`);
-    const romaji=element('div',undefined,'romaji-text note-romaji');romaji.id=`note-romaji-${i}`;input.setAttribute('aria-describedby',romaji.id);showRomaji(romaji,labels[i],'请填写假名读音');
-    input.addEventListener('input',()=>{labels[i]=input.value.trim();showRomaji(romaji,labels[i],'请填写假名读音');row.classList.toggle('missing',!labels[i]);$('confirmed').checked=false;mappingStatus();});
+    const romaji=element('div',undefined,'romaji-text note-romaji');romaji.id=`note-romaji-${i}`;
+    const preview=element('div',undefined,'reading-preview note-preview');preview.id=`note-preview-${i}`;input.setAttribute('aria-describedby',`${preview.id} ${romaji.id}`);
+    createReadingEditor(input,preview,labels[i],{kind:'note',onPreview:value=>showRomaji(romaji,value,'请填写假名读音'),onEdit:editor=>{labels[i]=editor.canonical;row.classList.toggle('missing',!labels[i]||!!editor.error);$('confirmed').checked=false;mappingStatus();}});
     input.addEventListener('focus',()=>{document.querySelectorAll('#note-rows tr').forEach(r=>r.classList.remove('selected'));row.classList.add('selected');drawRoll(i);});
     input.addEventListener('keydown',e=>{if(e.key==='Enter'){$(`note-${i+1}`)?.focus();e.preventDefault();}});
-    cell.append(input,romaji);row.append(cell);$('note-rows').append(row);
+    cell.append(input,preview,romaji);row.append(cell);$('note-rows').append(row);
   });
   if(saved){$('seed-steps').value=saved.steps;$('seed-cfg').value=saved.cfg;$('reference-mode').value=saved.reference.mode;$('reference-url').value=saved.reference.url||'';uploads.reference=saved.reference.asset;if(uploads.reference)$('reference-local-player').src=`/uploads/${uploads.reference}`;updateReference();}
   showPhrases();drawRoll();mappingStatus();
 }
 $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('input-panel').scrollIntoView({behavior:'smooth'});});
-$('export-midi').onclick=()=>action(async()=>{const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();},$('export-midi'));
+$('export-midi').onclick=()=>action(async()=>{requireNoteReadings();if(phraseDrafts.size)throw Error('请先保存修改过的乐句，再导出 MIDI。');const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();},$('export-midi'));
 $('render').addEventListener('click',()=>action(async()=>{
+  requireNoteReadings();
+  if(phraseDrafts.size)throw Error('请先保存修改过的乐句，再生成演唱。');
   if(!$('confirmed').checked)throw Error('请核对歌词和音符对应，并勾选确认。');
   if(labels.some(x=>!x.trim()))throw Error('请补齐空白音符；延音填 -，不演唱的音符填 SP。');
   if(prepared.alignment?.unassigned_units>0)throw Error('仍有整句读音未分配，请先按句修正并重新分配。');
@@ -162,7 +207,7 @@ function updateTask(state) {
   $('task-message').textContent=message;$('task-elapsed').textContent=`任务 ${current.slice(0,8)} · 已经过 ${Math.floor(((state.completed_at||Date.now()/1000)-state.created_at)/60)} 分钟`;
   $('cancel').hidden=!busy;$('retry').hidden=!['failed','cancelled'].includes(state.status)||!!prepared;
   $('view-log').hidden=false;$('prepare').disabled=busy;$('render').disabled=busy;
-  document.querySelectorAll('[data-align],#phrase-list input,#phrase-list textarea,#note-rows input').forEach(e=>e.disabled=busy);
+  document.querySelectorAll('[data-align],#phrase-list input,#phrase-list textarea,#note-rows input,#reading-input-mode').forEach(e=>e.disabled=busy);
   if(state.status!=='complete')$('result-panel').hidden=true;
   const step=state.status==='complete'?4:['reference','render'].includes(state.stage)?3:prepared?2:1;
   document.querySelectorAll('[data-step]').forEach(e=>e.classList.toggle('active',Number(e.dataset.step)===step));
@@ -224,6 +269,7 @@ function filterPhrases(){document.querySelectorAll('#phrase-list details').forEa
 $('phrase-review-only').onchange=filterPhrases;
 async function alignRequest(options){
   if(busy)throw Error('任务正在执行，请等待完成。');
+  requireNoteReadings();
   await api(`/api/jobs/${current}/align`,{...options,labels,prepared_revision:prepared.revision});
   pendingAlignment={job:current,revision:prepared.revision,phrase_id:options.phrase_id};
   $('confirmed').checked=false;await poll();
@@ -243,22 +289,24 @@ function showPhrases(){
     row.append(element('p',`LRC ${format(p.lrc_start)} → MIDI ${range}`,'hint'));
     if(p.warnings.length)row.append(element('p',p.warnings.join('；'),'phrase-warning'));
     const draft=phraseDrafts.get(p.id)||{reading:p.reading,note_start:p.note_start,note_end:p.note_end};
-    const field=element('label','本句读音（可补全歌词或填写假名 / 英文单词）'),input=element('textarea');input.rows=3;input.value=draft.reading;input.maxLength=2000;input.id=`phrase-reading-${p.id}`;field.append(input);row.append(field);
-    const romanDraft=element('p',undefined,'romaji-text');romanDraft.id=`phrase-reading-romaji-${p.id}`;input.setAttribute('aria-describedby',romanDraft.id);row.append(romanDraft);
-    const updateRomaji=()=>{showRomaji(romanSummary,input.value);showRomaji(romanDraft,input.value);};updateRomaji();
+    const field=element('label','本句读音'),input=element('textarea');input.rows=3;input.id=`phrase-reading-${p.id}`;field.append(input);row.append(field);
+    const preview=element('p',undefined,'reading-preview');preview.id=`phrase-preview-${p.id}`;
+    const romanDraft=element('p',undefined,'romaji-text');romanDraft.id=`phrase-reading-romaji-${p.id}`;input.setAttribute('aria-describedby',`${preview.id} ${romanDraft.id}`);row.append(preview,romanDraft);
     const controls=element('div',undefined,'settings');
     const first=element('input'),last=element('input');first.type=last.type='number';first.min=last.min=1;first.max=last.max=prepared.notes.length;first.value=draft.note_start+1;last.value=draft.note_end;
     first.id=`phrase-first-${p.id}`;last.id=`phrase-last-${p.id}`;
     for(const [name,node] of [['首音符编号',first],['尾音符编号',last]]){const label=element('label',name);label.append(node);controls.append(label);}row.append(controls);
-    const remember=()=>{phraseDrafts.set(p.id,{reading:input.value,note_start:Number(first.value)-1,note_end:Number(last.value)});updateRomaji();};
-    [input,first,last].forEach(node=>node.addEventListener('input',remember));
+    const remember=()=>{phraseDrafts.set(p.id,{reading:editor.canonical,inputState:editor.snapshot(),note_start:Number(first.value)-1,note_end:Number(last.value)});$('confirmed').checked=false;};
+    const editor=createReadingEditor(input,preview,draft.reading,{kind:'phrase',state:draft.inputState,onEdit:remember,
+      onPreview:value=>{showRomaji(romanSummary,value);showRomaji(romanDraft,value);}});
+    [first,last].forEach(node=>node.addEventListener('input',remember));
     const buttons=element('div',undefined,'inline');const apply=element('button','保存并重新分配本句','secondary');apply.type='button';apply.dataset.align='';
-    apply.onclick=()=>action(async()=>{await alignRequest({mode:'phrase',phrase_id:p.id,reading:input.value,note_start:Number(first.value)-1,note_end:Number(last.value)});},apply);
+    apply.onclick=()=>action(async()=>{await alignRequest({mode:'phrase',phrase_id:p.id,reading:editor.value(),note_start:Number(first.value)-1,note_end:Number(last.value)});},apply);
     const listen=element('button','试听本句旋律','text-button');listen.type='button';listen.onclick=()=>playNotes(prepared.notes.slice(Number(first.value)-1,Number(last.value)));
     const jump=element('button','查看对应音符','text-button');jump.type='button';jump.onclick=()=>focusNote(Math.max(0,Number(first.value)-1));buttons.append(apply,listen,jump);
     if(p.units.length&&p.note_indices.length>3*p.units.length&&p.units.every(u=>u.lang==='ja')){
       const repeat=element('button','按原读音重复填满','text-button');repeat.type='button';repeat.dataset.align='';
-      repeat.onclick=()=>{const count=Number(last.value)-Number(first.value)+1;if(!Number.isInteger(count)||count<1||count>500) {notice('先填写有效的首尾音符编号（最多 500 个）。');return;}input.value=Array.from({length:count},(_,i)=>p.units[i%p.units.length].text).join(' ');remember();notice('已生成重复读音草稿，尚未保存。仅在本句确实循环演唱这些读音时使用，请核对后保存。');};
+      repeat.onclick=()=>{const count=Number(last.value)-Number(first.value)+1;if(!Number.isInteger(count)||count<1||count>500) {notice('先填写有效的首尾音符编号（最多 500 个）。');return;}editor.setCanonical(Array.from({length:count},(_,i)=>p.units[i%p.units.length].text).join(' '));remember();notice('已生成重复读音草稿，尚未保存。仅在本句确实循环演唱这些读音时使用，请核对后保存。');};
       buttons.append(repeat);
     }
     row.append(buttons);$('phrase-list').append(row);
