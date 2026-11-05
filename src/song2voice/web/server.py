@@ -16,9 +16,9 @@ import uuid
 
 from ..report_server import ReportHandler
 from ..selection import atomic_json
-from ..midi_score import inspect_midi
+from ..midi_score import inspect_midi, require_edited_mapping
 from ..netease import fetch_lyrics, song_id_from_url
-from .workflow import read, load_config, asset, export_lyric_midi
+from .workflow import read, load_config, asset, export_lyric_midi, require_score_revision
 
 LOCK=threading.Lock()
 STATIC=Path(__file__).with_name('static')
@@ -188,7 +188,8 @@ class Handler(ReportHandler):
                     self.send_json(dict(ok=True));return
                 if action=='retry':launch(self.config,job,'prepare');self.send_json(dict(ok=True));return
                 if not (job/'prepared.json').exists():raise ValueError('请先完成乐谱准备')
-                labels=request.get('labels',[]);expected=read(job/'prepared.json')['labels']
+                prepared=read(job/'prepared.json');require_score_revision(prepared,request)
+                labels=request.get('labels',[]);expected=prepared['labels']
                 if not isinstance(labels,list) or len(labels)!=len(expected) or any(not isinstance(x,str) or not x.strip() or len(x)>64 for x in labels):
                     raise ValueError('请补齐所有音符的歌词读音')
                 if action=='midi':
@@ -198,6 +199,7 @@ class Handler(ReportHandler):
                     export_lyric_midi(asset(self.config,original['midi_asset']),prepared['track'],prepared['notes'],labels,job/'lyrics.mid')
                     self.send_json(dict(url=f'/files/{job.name}/lyrics.mid'));return
                 if request.get('confirmed') is not True:raise ValueError('请先核对歌词对应')
+                require_edited_mapping(read(job/'prepared.json'),labels)
                 if type(request.get('steps')) is not int or not 10<=request['steps']<=100:raise ValueError('采样步数范围为 10–100')
                 if type(request.get('cfg')) not in (int,float) or not math.isfinite(request['cfg']) or not 0<=request['cfg']<=3:raise ValueError('CFG 范围为 0–3')
                 ref=request['reference']

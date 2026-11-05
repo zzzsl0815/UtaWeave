@@ -11,6 +11,25 @@ REST_WORDS={'SP','AP','<SP>','<AP>'}
 NUMERICAL_TOLERANCE=1e-5
 
 
+def conditioning_bpm(bpm):
+    """Use VR's integer 1..255 vocabulary without a silent 120 BPM fallback."""
+    if not math.isfinite(bpm) or bpm<=0:
+        raise ValueError('BPM must be finite and positive')
+    while bpm>255:bpm/=2
+    while bpm<1:bpm*=2
+    return max(1,min(255,round(bpm)))
+
+
+def compiled_duration(entry):
+    bpm=entry['bpm']
+    if bpm!=int(bpm) or not 1<=bpm<=255:
+        raise ValueError('Compiled VR BPM must be an integer from 1 to 255')
+    seconds=sum(NOTE_UNITS[n] for n in entry['note'])*60/bpm
+    if seconds>=23.5:
+        raise ValueError(f"{entry.get('item_name','chunk')}: VR 条件时长 {seconds:.2f} 秒超过短句上限，请检查节拍或切分")
+    return seconds
+
+
 def quantize_duration(seconds,bpm):
     if not math.isfinite(seconds) or seconds<=0 or not math.isfinite(bpm) or bpm<=0:
         raise ValueError('Duration and BPM must be finite and positive')
@@ -102,7 +121,8 @@ def rest_tokens(seconds,bpm):
 
 def compile_chunk_annotation(chunk,bpm):
     """Keep every original word and note; replace only outer crop padding."""
-    entry=dict(item_name=chunk['id'],word=[],word_dur=[],pitch=[],pitch_dur=[],note=[],pitch2word=[],bpm=bpm,has_score=True)
+    source_bpm=bpm;bpm=conditioning_bpm(bpm)
+    entry=dict(item_name=chunk['id'],word=[],word_dur=[],pitch=[],pitch_dur=[],note=[],pitch2word=[],bpm=bpm,source_bpm=source_bpm,has_score=True)
     def rest(seconds):
         tokens=rest_tokens(seconds,bpm);owner=len(entry['word'])
         entry['word'].append('SP');entry['word_dur'].append(seconds)
@@ -116,7 +136,8 @@ def compile_chunk_annotation(chunk,bpm):
         if gap>=.075:rest(gap)
         owner=len(entry['word']);entry['word'].append(word['word'])
         entry['word_dur'].append(word['end']-word['start'])
-        entry['pitch'].extend(word['pitch']);entry['note'].extend(word['note'])
+        entry['pitch'].extend(word['pitch'])
+        entry['note'].extend(word['note'] if bpm==source_bpm else [quantize_duration(d,bpm) for d in word['pitch_dur']])
         entry['pitch_dur'].extend(word['pitch_dur']);entry['pitch2word'].extend([owner]*len(word['pitch']))
         cursor=word['end']
     rest(.4)

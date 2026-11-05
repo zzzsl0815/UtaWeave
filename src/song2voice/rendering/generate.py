@@ -14,7 +14,7 @@ import numpy as np
 import soundfile as sf
 
 from ..selection import require_reference
-from ..conditioning import check_conditioning, compile_chunk_annotation, require_conditioning
+from ..conditioning import check_conditioning, compile_chunk_annotation, require_conditioning, compiled_duration
 from .audio import intervals, activity
 from .runtime import runtime, load_model, activate_vocalrender
 
@@ -156,6 +156,7 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     split['whole_lyric_lines']=whole_lines
     for chunk in split['chunks']:
         chunk['annotation']=compile_chunk_annotation(chunk,score[0]['bpm'])
+        chunk['estimated_duration']=compiled_duration(chunk['annotation'])
     write(out/'compiled_condition_preflight.json',require_conditioning([c['annotation'] for c in split['chunks']]))
     recipe=dict(score_sha256=sha(target['score']),reference_sha256=sha(selected['audio']),
         checkpoint_sha256=sha(checkpoint/'lora_weights.safetensors'),checkpoint_config_sha256=sha(checkpoint/'lora_config.json'),
@@ -192,8 +193,10 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     for chunk in split['chunks']:
         entry=chunk['annotation']
         text=rebuild_svs_prompt(entry,model.text_tokenizer.tokenizer,preprocessor=preprocessor)
-        chunk.update(annotation=entry,svs_prompt=text,estimated_duration=estimate_svs_duration(text))
-        assert chunk['estimated_duration']<23.5
+        estimated=estimate_svs_duration(text)
+        if f"<BPM_{entry['bpm']}>" not in text or not math.isclose(estimated,chunk['estimated_duration'],abs_tol=1e-6):
+            raise ValueError(f"{chunk['id']}: VR prompt changed the compiled tempo or note durations")
+        chunk.update(annotation=entry,svs_prompt=text)
     write(out/'chunk_plan.json', split)
     torch.save(dict(prompt=prompt.cpu(),chunks=split['chunks']),out/'inputs.pt')
     folder=out/'chunks';folder.mkdir(exist_ok=True)

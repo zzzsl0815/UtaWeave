@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 import unittest
 import mido
-from song2voice.midi_score import inspect_midi, notes_to_score, clean_lyrics
+from song2voice.midi_score import inspect_midi, notes_to_score, clean_lyrics, split_lyrics_text, require_edited_mapping
 from song2voice.web.workflow import export_lyric_midi
 
 
@@ -34,3 +34,24 @@ class MidiScoreTests(unittest.TestCase):
 
     def test_lrc_metadata_is_not_sung(self):
         self.assertEqual(clean_lyrics('[ar:artist]\n[00:03.21]こんにちは\n[00:04.0][00:06.0]世界'), 'こんにちは\n世界')
+
+    def test_timestamped_credits_are_removed_but_lyric_words_remain(self):
+        result=split_lyrics_text('[00:00] 作词 : someone\n[00:00.1]作曲・歌\n[00:01] 作曲 / 编曲：someone\n[00:02]制作人: someone\n[00:03]あなたの言葉')
+        self.assertEqual(result['text'],'作曲・歌\nあなたの言葉')
+        self.assertEqual(len(result['excluded_credit_lines']),3)
+
+    def test_fast_midi_keeps_note_clock_and_changes_only_conditioning_tempo(self):
+        notes=[dict(start=1.,end=1.+60/278,pitch=60)]
+        score,offset=notes_to_score(notes,['あ'],{'あ':['a']},278)
+        self.assertEqual(offset,0)
+        self.assertEqual(score[0]['bpm'],139)
+        self.assertEqual(score[0]['source_bpm'],278)
+        self.assertEqual(score[0]['note'],['<NOTE_8>'])
+        self.assertEqual(score[0]['source_window']['start_seconds'],1.)
+        self.assertAlmostEqual(score[0]['word_dur'][0],60/278)
+
+    def test_unchanged_overflow_draft_cannot_silently_drop_lyrics(self):
+        prepared=dict(labels=['き','み'],unmatched_moras=1)
+        with self.assertRaisesRegex(ValueError,'未分配'):require_edited_mapping(prepared,['き','み'])
+        require_edited_mapping(prepared,['き','みの'])
+        require_edited_mapping(dict(labels=['き','み'],unmatched_moras=0),['き','み'])

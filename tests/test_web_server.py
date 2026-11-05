@@ -3,11 +3,14 @@ from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import time
 from threading import Thread
 import unittest
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
 from song2voice.web.server import Handler
+from song2voice.web.workflow import failure_message
 
 
 class WebServerTests(unittest.TestCase):
@@ -36,3 +39,34 @@ class WebServerTests(unittest.TestCase):
         outside=self.root/'private.wav';outside.write_bytes(b'secret');(job/'leak.wav').symlink_to(outside)
         with self.assertRaises(HTTPError) as error:urlopen(self.base+'/files/'+job.name+'/leak.wav')
         self.assertEqual(error.exception.code,404)
+
+    def test_overflow_draft_is_rejected_before_any_worker_launch(self):
+        job=self.root/'jobs'/('b'*32);job.mkdir()
+        (job/'prepared.json').write_text(json.dumps(dict(labels=['き','み'],unmatched_moras=1)))
+        payload=json.dumps(dict(labels=['き','み'],confirmed=True)).encode()
+        with self.assertRaises(HTTPError) as error:
+            urlopen(Request(self.base+'/api/jobs/'+job.name+'/render',payload,{'X-UtaWeave':'local'}))
+        self.assertIn('未分配',error.exception.read().decode())
+        self.assertFalse((job/'process.json').exists())
+
+    def test_stale_page_cannot_submit_old_lyrics_after_preparing_again(self):
+        job=self.root/'jobs'/('d'*32);job.mkdir()
+        (job/'prepared.json').write_text(json.dumps(dict(labels=['き'],revision='new-revision')))
+        for revision in [None,'old-revision']:
+            payload=json.dumps(dict(labels=['み'],confirmed=True,prepared_revision=revision)).encode()
+            with self.assertRaises(HTTPError) as error:
+                urlopen(Request(self.base+'/api/jobs/'+job.name+'/render',payload,{'X-UtaWeave':'local'}))
+            self.assertIn('版本过期',error.exception.read().decode())
+        self.assertFalse((job/'process.json').exists())
+
+    def test_worker_surfaces_current_stage_error_and_ignores_stale_runs(self):
+        job=self.root/'jobs'/('c'*32);job.mkdir()
+        state=dict(stage='render',updated_at=time.time()-1)
+        (job/'status.json').write_text(json.dumps(state))
+        run=job/'render/example';run.mkdir(parents=True)
+        (run/'pipeline_status.json').write_text(json.dumps(dict(error='generate 阶段失败：invalid tempo')))
+        error=subprocess.CalledProcessError(1,['pipeline'])
+        self.assertIn('invalid tempo',failure_message(job,error))
+        state['updated_at']=time.time()+1
+        (job/'status.json').write_text(json.dumps(state))
+        self.assertEqual(failure_message(job,error),str(error))

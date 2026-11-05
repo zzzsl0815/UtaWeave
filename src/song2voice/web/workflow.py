@@ -12,7 +12,7 @@ import sys
 import time
 
 from ..selection import atomic_json, require_reference
-from ..midi_score import inspect_midi, clean_lyrics, notes_to_score, edit_score
+from ..midi_score import inspect_midi, split_lyrics_text, notes_to_score, edit_score, require_edited_mapping
 
 
 def read(path):
@@ -75,7 +75,7 @@ def lyrics(cfg, request, source_url=None):
             result.update(fetch_lyrics(url),origin='网易云歌词')
         except Exception:
             result['warning']='歌词暂时获取失败，可返回输入页粘贴歌词；原曲转谱仍可使用音频识别。'
-    result['text']=clean_lyrics(result['original'])
+    result.update(split_lyrics_text(result['original']))
     return result
 
 
@@ -103,8 +103,13 @@ def prepare(cfg, job, request):
             draft=g2p(cfg,job,text=lyric['text'])
             labels=[draft['moras'][i] if i<len(draft['moras']) else '' for i in range(len(track['notes']))]
         if not any(labels):raise ValueError('MIDI 没有内嵌歌词，请输入歌词文本或歌词链接')
-        prepared=dict(mode='midi',notes=track['notes'],labels=labels,bpm=info['bpm'],lyrics=lyric,
-                      reading=draft,track=track['index'],warnings=[x for x in [info['warning'],draft['warning']] if x],
+        warnings=[x for x in [info['warning'],draft['warning']] if x]
+        if abs(info['bpm']-info['render_bpm'])>.01:
+            warnings.append(f"MIDI 为 {info['bpm']:.2f} BPM；VR 使用 {info['render_bpm']} BPM 并重新换算音符拍值，原始起止时间保持不变。")
+        if lyric['excluded_credit_lines']:
+            warnings.append(f"已从读音草稿中排除 {len(lyric['excluded_credit_lines'])} 行作词、作曲等署名，原文仍保留。")
+        prepared=dict(mode='midi',notes=track['notes'],labels=labels,bpm=info['bpm'],render_bpm=info['render_bpm'],lyrics=lyric,
+                      reading=draft,track=track['index'],warnings=warnings,
                       unmatched_moras=max(0,len(draft['moras'])-len(labels)))
     else:
         source=download(cfg,request['source_url'],job/'source') if request.get('source_url') else asset(cfg,request['source_asset'])
@@ -130,6 +135,7 @@ def prepare(cfg, job, request):
                 cursor+=duration
         prepared=dict(mode='song',notes=units,labels=[n['lyric'] for n in units],bpm=request['bpm'],lyrics=lyric,
                       warnings=['显示的是音频自动标注；网易云歌词仅供核对，没有直接替换自动标注。'],unmatched_moras=0)
+    prepared['revision']=str(time.time_ns())
     atomic_json(job/'prepared.json',prepared)
     state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='请核对音符、歌词读音与延音，再生成演唱',updated_at=time.time())
     atomic_json(job/'status.json',state)
@@ -174,11 +180,18 @@ def math_ceil(value):
     return math.ceil(value)
 
 
+def require_score_revision(prepared,request):
+    if prepared.get('revision') is not None and request.get('prepared_revision')!=prepared['revision']:
+        raise ValueError('乐谱已重新准备，当前页面的草稿版本过期。请刷新页面并核对新草稿后再提交。')
+
+
 def render(cfg,job,request):
     from ..references import prepare_reference
     from ..rendering.generate import plan
-    from ..conditioning import require_conditioning
+    from ..conditioning import require_conditioning, compile_chunk_annotation, compiled_duration
     prepared=read(job/'prepared.json');labels=request['labels'];original=read(job/'request.json')
+    require_score_revision(prepared,request)
+    require_edited_mapping(prepared,labels)
     stage(job,'score','检查歌词与音符对应')
     wanted=labels if prepared['mode']=='midi' else [x for x,y in zip(labels,prepared['labels']) if x!=y]
     phones=g2p(cfg,job,readings=wanted) if wanted else {}
@@ -193,6 +206,7 @@ def render(cfg,job,request):
         stems=job/'source-stems/stems';runtime['source_mode']='song'
     require_conditioning(score)
     split=plan(score,whole_lines=True,stems=stems)
+    for chunk in split['chunks']:compiled_duration(compile_chunk_annotation(chunk,score[0]['bpm']))
     atomic_json(job/'score.vr.json',score)
     atomic_json(job/'score-check.json',dict(chunks=split['chunk_count'],lyric_units=split['lyric_unit_count']))
     stage(job,'reference','准备目标音色参考')
@@ -223,6 +237,16 @@ def render(cfg,job,request):
     atomic_json(job/'status.json',state)
 
 
+def failure_message(job,error):
+    state=read(job/'status.json')
+    if isinstance(error,subprocess.CalledProcessError) and state.get('stage')=='render':
+        files=[p for p in job.glob('render/*/pipeline_status.json') if p.stat().st_mtime>=state['updated_at']]
+        if files:
+            pipeline=read(max(files,key=lambda p:p.stat().st_mtime))
+            if pipeline.get('error'):return str(pipeline['error'])[:1600]
+    return str(error)[:1600]
+
+
 def run(config,job_id,action):
     cfg=load_config(config);job=Path(cfg['workspace'])/'jobs'/job_id
     def interrupted(*_):raise InterruptedError('任务已停止')
@@ -238,7 +262,7 @@ def run(config,job_id,action):
         state=read(job/'status.json');cancelled=(job/'CANCEL').exists()
         state.update(status='cancelled' if cancelled else 'failed',stage='stopped' if cancelled else 'error',
                      message='任务已停止' if cancelled else '任务失败，请检查错误信息后重试',
-                     error=str(error)[:1600],updated_at=time.time())
+                     error=failure_message(job,error),updated_at=time.time())
         atomic_json(job/'status.json',state)
         import traceback
         traceback.print_exc()

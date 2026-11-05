@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import re
 
-from .conditioning import quantize_duration, require_conditioning
+from .conditioning import quantize_duration, require_conditioning, conditioning_bpm
 
 
 def inspect_midi(path):
@@ -58,19 +58,32 @@ def inspect_midi(path):
         tracks.append(dict(index=index, name=track.name or f'音轨 {index+1}', notes=notes,
                            polyphonic=overlap, count=len(notes), seconds=notes[-1]['end']))
     if not tracks: raise ValueError('MIDI 中没有非打击乐音符')
-    return dict(tracks=tracks, bpm=60000000/tempos[0],
+    bpm=60000000/tempos[0]
+    return dict(tracks=tracks, bpm=bpm,render_bpm=conditioning_bpm(bpm),
                 tempo_changes=[dict(seconds=clock(t), bpm=60000000/tempos[t]) for t in ticks],
                 warning='速度变化按真实秒数保留；VR 音符类别按初始速度近似量化。' if len(ticks)>1 else None)
 
 
-def clean_lyrics(text):
+def split_lyrics_text(text):
     # Keep the original LRC separately; do not include timestamps or metadata in singing.
-    lines=[]
+    lines=[];excluded=[]
     for line in str(text).splitlines():
         if re.match(r'^\[(?:ar|ti|al|by|offset|length|re|ve):',line,re.I):continue
         line=re.sub(r'\[[^\]]*\]','',line).strip()
+        credit=r'(?:作词|作詞|作曲|编曲|編曲|制作人|製作人|プロデューサー|演唱|歌手|词曲|詞曲|混音|母带|母帶|录音|錄音|Lyrics?\s+by|Composed\s+by|Arranged\s+by|Produced\s+by)'
+        if re.match(r'^'+credit+r'(?:\s*[/&、]\s*'+credit+r')*\s*[:：]',line,re.I):
+            excluded.append(line);continue
         if line: lines.append(line)
-    return '\n'.join(lines)
+    return dict(text='\n'.join(lines),excluded_credit_lines=excluded)
+
+
+def clean_lyrics(text):
+    return split_lyrics_text(text)['text']
+
+
+def require_edited_mapping(prepared,labels):
+    if prepared.get('unmatched_moras',0)>0 and labels==prepared['labels']:
+        raise ValueError(f"自动歌词草稿还有 {prepared['unmatched_moras']} 个拍音未分配，不能直接生成。请先修改逐音符对应：一个音符可填多个拍音，延音填 -；也可返回输入页修正歌词范围。")
 
 
 def phonemize(text=None, readings=None):
@@ -104,6 +117,7 @@ def notes_to_score(notes, labels, phones, bpm, lead_in=.5):
     if any(not str(s).strip() for s in labels):raise ValueError('仍有未分配歌词的音符')
     offset=max(0.,lead_in-float(notes[0]['start']))
     if notes[-1]['end']+offset>1200:raise ValueError('单次歌曲最长 20 分钟，请分段处理')
+    source_bpm=bpm;bpm=conditioning_bpm(bpm)
     score=[];row=None;cursor=None
     for note,label in zip(notes,labels):
         label=str(label).strip();start=float(note['start'])+offset;end=float(note['end'])+offset
@@ -114,7 +128,7 @@ def notes_to_score(notes, labels, phones, bpm, lead_in=.5):
         if row is None or start-cursor>=.25:
             if label=='-':raise ValueError('新唱句的第一个音符不能是延音 -')
             row=dict(item_name=f'midi_{len(score):03d}',line_index=len(score),
-                     source_window=dict(start_seconds=start),bpm=bpm,has_score=True,
+                     source_window=dict(start_seconds=start),bpm=bpm,source_bpm=source_bpm,has_score=True,
                      word=[],word_dur=[],pitch=[],pitch_dur=[],pitch2word=[],note=[],ph=[],ph2word=[])
             score.append(row);cursor=start
         gap=max(0.,start-cursor)

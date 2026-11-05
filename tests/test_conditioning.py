@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from song2voice.conditioning import (
     NOTE_UNITS,check_conditioning,compile_chunk_annotation,quantize_annotation,
-    quantize_duration,require_conditioning,rest_tokens)
+    quantize_duration,require_conditioning,rest_tokens,conditioning_bpm,compiled_duration)
 
 
 def sample():
@@ -15,6 +15,27 @@ def sample():
 
 
 class ConditioningSafety(unittest.TestCase):
+    def test_out_of_vocabulary_tempo_keeps_note_seconds(self):
+        duration=60/278
+        chunk=dict(id='fast',content_start=1.,words=[dict(word='あ',start=1.,end=1.+duration,
+            pitch=[60],pitch_dur=[duration],note=['<NOTE_4>'])])
+        entry=compile_chunk_annotation(chunk,278)
+        self.assertEqual(entry['bpm'],139)
+        self.assertEqual(entry['source_bpm'],278)
+        i=entry['pitch'].index(60)
+        self.assertEqual(entry['note'][i],'<NOTE_8>')
+        self.assertEqual(entry['pitch_dur'][i],duration)
+        self.assertAlmostEqual(60/entry['bpm']*NOTE_UNITS[entry['note'][i]],duration)
+        self.assertLess(compiled_duration(entry),2)
+
+    def test_compiled_preflight_blocks_unsupported_bpm_and_duration(self):
+        for bpm in [120,255,278,512,.5]:
+            self.assertTrue(1<=conditioning_bpm(bpm)<=255)
+        with self.assertRaisesRegex(ValueError,'BPM'):
+            compiled_duration(dict(bpm=278,note=['<NOTE_4>']))
+        with self.assertRaisesRegex(ValueError,'短句上限'):
+            compiled_duration(dict(bpm=120,note=['<NOTE_1>']*12))
+
     def test_quantization_matches_all_native_note_centers(self):
         for bpm in [60,87,120,174]:
             for token,units in NOTE_UNITS.items():

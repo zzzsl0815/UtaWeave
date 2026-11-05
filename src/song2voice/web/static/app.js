@@ -77,6 +77,9 @@ function pitchName(p) { return p ? ['C','C♯','D','D♯','E','F','F♯','G','G�
 function mappingStatus() {
   const missing = labels.filter(v => !v.trim()).length;
   $('mapping-status').textContent = `${labels.length-missing} / ${labels.length} 已填写${missing ? `，还有 ${missing} 个空项` : ''}${prepared?.unmatched_moras ? `；原文比音符多 ${prepared.unmatched_moras} 个拍音，请合并读音或核对歌词范围，不要遗漏。` : ''}`;
+  const extra=prepared?.reading?.moras?.slice(prepared.notes.length) || [];
+  $('unassigned-lyrics').hidden=!extra.length;
+  $('unassigned-lyrics').textContent=extra.length ? `初始草稿未分配的读音（${extra.length} 个拍音）：\n${extra.join(' ')}\n\n这些读音不会自动补唱。请结合原文修改上方对应；不能直接提交未修改的超额草稿。` : '';
 }
 function drawRoll(selected = -1) {
   if (!prepared) return;
@@ -103,7 +106,7 @@ $('piano-roll').addEventListener('click',e => {
 });
 window.addEventListener('resize',()=>drawRoll());
 function showPrepared(data, saved) {
-  prepared=data;labels=[...(saved?.labels || data.labels)];setMode(data.mode);
+  prepared=data;labels=[...(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels)];setMode(data.mode);
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
   $('score-summary').replaceChildren();
   for (const text of [`${data.notes.length} 个${data.mode==='midi'?'音符':'歌词单元'}`,`${data.bpm.toFixed(1)} BPM`,`${data.notes.at(-1).end.toFixed(1)} 秒`]) {
@@ -128,14 +131,15 @@ function showPrepared(data, saved) {
   drawRoll();mappingStatus();
 }
 $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('input-panel').scrollIntoView({behavior:'smooth'});});
-$('export-midi').onclick=()=>action(async()=>{const data=await api(`/api/jobs/${current}/midi`,{labels});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();},$('export-midi'));
+$('export-midi').onclick=()=>action(async()=>{const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();},$('export-midi'));
 $('render').addEventListener('click',()=>action(async()=>{
   if(!$('confirmed').checked)throw Error('请核对歌词和音符对应，并勾选确认。');
   if(labels.some(x=>!x.trim()))throw Error('请补齐空白音符；延音填 -，不演唱的音符填 SP。');
+  if(prepared.unmatched_moras>0&&labels.every((x,i)=>x===prepared.labels[i]))throw Error(`还有 ${prepared.unmatched_moras} 个拍音未分配，请先修改歌词与音符对应，再生成。`);
   const reference={mode:$('reference-mode').value,asset:uploads.reference,url:$('reference-url').value.trim()};
   if(['clip','audio'].includes(reference.mode)&&!reference.asset)throw Error('请上传音色参考。');
   if(reference.mode==='netease'&&!reference.url)throw Error('请填写目标音色歌曲链接。');
-  await api(`/api/jobs/${current}/render`,{labels,confirmed:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value)});
+  await api(`/api/jobs/${current}/render`,{labels,prepared_revision:prepared.revision,confirmed:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value)});
   $('result-panel').hidden=true;await poll();
 },$('render')));
 function updateTask(state) {
@@ -159,7 +163,8 @@ async function poll() {
   try {
     if(current){
       const data=await api(`/api/jobs/${current}`);
-      if(data.prepared&&loadedJob!==current){showPrepared(data.prepared,data.render_request);loadedJob=current;}
+      const revision=current+':'+(data.prepared?.revision||'');
+      if(data.prepared&&loadedJob!==revision){showPrepared(data.prepared,data.render_request);loadedJob=revision;}
       updateTask(data.status);
       if(data.reference && $('selected-reference').dataset.key!==current+'/'+data.reference.file){
         const holder=$('selected-reference');holder.replaceChildren();holder.dataset.key=current+'/'+data.reference.file;

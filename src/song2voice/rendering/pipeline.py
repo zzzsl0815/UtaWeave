@@ -111,8 +111,16 @@ def main(config_file, out):
         write(run/'pipeline_status.json',state)
         print('STAGE',name,flush=True)
         log = run/(name+'.log')
-        with log.open('a') as stream:
-            subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT,check=True,env=env)
+        try:
+            with log.open('a') as stream:
+                subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT,check=True,env=env)
+        except subprocess.CalledProcessError as error:
+            with log.open('rb') as stream:
+                stream.seek(max(0,log.stat().st_size-4096))
+                lines=stream.read().decode('utf-8','replace').strip().splitlines()
+            detail=lines[-1][-1200:] if lines else f'进程退出码 {error.returncode}'
+            state['stages'][name]['log']=str(log)
+            raise RuntimeError(f'{name} 阶段失败：{detail}') from error
         state['stages'][name].update(status='complete',log=str(log))
         write(run/'pipeline_status.json',state)
 
