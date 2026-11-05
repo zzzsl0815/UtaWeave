@@ -75,11 +75,16 @@ function updateReference() {
 $('reference-mode').addEventListener('change',updateReference);
 function format(seconds) { return `${Math.floor(seconds/60)}:${(seconds%60).toFixed(2).padStart(5,'0')}`; }
 function pitchName(p) { return p ? ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'][p%12] + (Math.floor(p/12)-1) : '未知'; }
+function showRomaji(node,reading,needsReadingHint='含汉字时，请保存本句以更新读音') {
+  const result=romanizeReading(reading);
+  node.textContent=`罗马音：${result.text || '—'}${result.needsReading?' · '+needsReadingHint:''}`;
+}
 function mappingStatus() {
   const missing = labels.filter(v => !v.trim()).length;
   const aligned=prepared?.alignment;
   $('mapping-status').textContent = `${labels.length-missing} / ${labels.length} 音符已填写${missing ? `，还有 ${missing} 个空项` : ''}${prepared?.unmatched_moras ? `；还有 ${prepared.unmatched_moras} 个读音单元未分配，请修正对应，不要遗漏。` : ''}`;
-  const extra=aligned ? aligned.phrases.flatMap(p=>p.unassigned.map(i=>`第 ${p.id+1} 句：${p.units[i].text}`)) : (prepared?.reading?.moras?.slice(prepared.notes.length) || []);
+  const annotated=value=>`${value} (${romanizeReading(value).text})`;
+  const extra=aligned ? aligned.phrases.flatMap(p=>p.unassigned.map(i=>`第 ${p.id+1} 句：${annotated(p.units[i].text)}`)) : (prepared?.reading?.moras?.slice(prepared.notes.length) || []).map(annotated);
   $('unassigned-lyrics').hidden=!extra.length;
   $('unassigned-lyrics').textContent=extra.length ? `未分配的读音（${extra.length} 个单元）：\n${extra.join(' ')}\n\n请修正分句范围或读音并重新分配。` : '';
 
@@ -117,6 +122,7 @@ function showPrepared(data, saved) {
   }
   $('score-warning').textContent=data.warnings.join(' ');
   $('original-lyrics').textContent=data.lyrics.original || '没有独立歌词原文';$('auto-reading').textContent=data.reading?.reading || '';
+  showRomaji($('auto-romaji'),data.reading?.reading || '');$('auto-romaji').hidden=!data.reading?.reading;
   $('mapping-hint').textContent=data.mode==='midi'?'每行对应一个音符，填写日语假名或英文单词。一个音符可填写多个拍音；同一字跨多个连续音符时，后续音符填 -。不演唱的音符填 SP。MIDI 中的原有休止自动保留。':'每行对应自动标注的一个歌词单元，可修改假名读音。此处保持音符及时间不变；如需修改旋律，可使用 MIDI 入口。';
   $('confirmed').checked=false;$('export-midi').hidden=data.mode!=='midi';$('note-rows').replaceChildren();
   data.notes.forEach((note,i)=>{
@@ -125,10 +131,11 @@ function showPrepared(data, saved) {
       const cell=document.createElement('td');cell.textContent=text;row.append(cell);
     }
     const cell=document.createElement('td'),input=document.createElement('input');input.id=`note-${i}`;input.value=labels[i];input.maxLength=64;input.setAttribute('aria-label',`第 ${i+1} 个音符的歌词读音`);
-    input.addEventListener('input',()=>{labels[i]=input.value.trim();row.classList.toggle('missing',!labels[i]);$('confirmed').checked=false;mappingStatus();});
+    const romaji=element('div',undefined,'romaji-text note-romaji');romaji.id=`note-romaji-${i}`;input.setAttribute('aria-describedby',romaji.id);showRomaji(romaji,labels[i],'请填写假名读音');
+    input.addEventListener('input',()=>{labels[i]=input.value.trim();showRomaji(romaji,labels[i],'请填写假名读音');row.classList.toggle('missing',!labels[i]);$('confirmed').checked=false;mappingStatus();});
     input.addEventListener('focus',()=>{document.querySelectorAll('#note-rows tr').forEach(r=>r.classList.remove('selected'));row.classList.add('selected');drawRoll(i);});
     input.addEventListener('keydown',e=>{if(e.key==='Enter'){$(`note-${i+1}`)?.focus();e.preventDefault();}});
-    cell.append(input);row.append(cell);$('note-rows').append(row);
+    cell.append(input,romaji);row.append(cell);$('note-rows').append(row);
   });
   if(saved){$('seed-steps').value=saved.steps;$('seed-cfg').value=saved.cfg;$('reference-mode').value=saved.reference.mode;$('reference-url').value=saved.reference.url||'';uploads.reference=saved.reference.asset;if(uploads.reference)$('reference-local-player').src=`/uploads/${uploads.reference}`;updateReference();}
   showPhrases();drawRoll();mappingStatus();
@@ -230,17 +237,20 @@ function showPhrases(){
   $('phrase-list').replaceChildren();
   a.phrases.forEach(p=>{
     const row=element('details',undefined,'phrase');row.id=`phrase-${p.id}`;row.dataset.review=String(p.needs_review);
-    const summary=element('summary');summary.append(element('span',`${p.id+1}. ${p.text}`),element('small',`${p.note_indices.length} 音符 / ${p.units.length} 读音单元${p.needs_review?' · 需核对':' · 自动草稿'}`));row.append(summary);
+    const romanSummary=element('span',undefined,'romaji-text');romanSummary.id=`phrase-romaji-${p.id}`;
+    const summary=element('summary');summary.append(element('span',`${p.id+1}. ${p.text}`),romanSummary,element('small',`${p.note_indices.length} 音符 / ${p.units.length} 读音单元${p.needs_review?' · 需核对':' · 自动草稿'}`));row.append(summary);
     const range=p.midi_start==null?'尚未匹配':`${format(p.midi_start)}–${format(p.midi_end)}`;
     row.append(element('p',`LRC ${format(p.lrc_start)} → MIDI ${range}`,'hint'));
     if(p.warnings.length)row.append(element('p',p.warnings.join('；'),'phrase-warning'));
     const draft=phraseDrafts.get(p.id)||{reading:p.reading,note_start:p.note_start,note_end:p.note_end};
     const field=element('label','本句读音（可补全歌词或填写假名 / 英文单词）'),input=element('textarea');input.rows=3;input.value=draft.reading;input.maxLength=2000;input.id=`phrase-reading-${p.id}`;field.append(input);row.append(field);
+    const romanDraft=element('p',undefined,'romaji-text');romanDraft.id=`phrase-reading-romaji-${p.id}`;input.setAttribute('aria-describedby',romanDraft.id);row.append(romanDraft);
+    const updateRomaji=()=>{showRomaji(romanSummary,input.value);showRomaji(romanDraft,input.value);};updateRomaji();
     const controls=element('div',undefined,'settings');
     const first=element('input'),last=element('input');first.type=last.type='number';first.min=last.min=1;first.max=last.max=prepared.notes.length;first.value=draft.note_start+1;last.value=draft.note_end;
     first.id=`phrase-first-${p.id}`;last.id=`phrase-last-${p.id}`;
     for(const [name,node] of [['首音符编号',first],['尾音符编号',last]]){const label=element('label',name);label.append(node);controls.append(label);}row.append(controls);
-    const remember=()=>phraseDrafts.set(p.id,{reading:input.value,note_start:Number(first.value)-1,note_end:Number(last.value)});
+    const remember=()=>{phraseDrafts.set(p.id,{reading:input.value,note_start:Number(first.value)-1,note_end:Number(last.value)});updateRomaji();};
     [input,first,last].forEach(node=>node.addEventListener('input',remember));
     const buttons=element('div',undefined,'inline');const apply=element('button','保存并重新分配本句','secondary');apply.type='button';apply.dataset.align='';
     apply.onclick=()=>action(async()=>{await alignRequest({mode:'phrase',phrase_id:p.id,reading:input.value,note_start:Number(first.value)-1,note_end:Number(last.value)});},apply);
