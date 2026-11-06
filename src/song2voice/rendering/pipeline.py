@@ -11,6 +11,7 @@ import sys
 
 from .generate import read, write, sha
 from ..selection import require_reference, selection_lock, resolve_reference_run
+from ..language import song_language, use_lora
 
 PATH_KEYS = ('score', 'reference_run', 'checkpoint', 'stems', 'base_model',
              'vocalrender_repo', 'tifa_repo', 'tifa_weights', 'guide_reference_run', 'seed_vc_config')
@@ -19,7 +20,15 @@ PATH_KEYS = ('score', 'reference_run', 'checkpoint', 'stems', 'base_model',
 def resolve_config(config_file):
     config_file = Path(config_file).resolve()
     config = read(config_file)
+    config['language'] = song_language(config)
+    config['use_lora'] = use_lora(config)
+    if not config['use_lora']:
+        config['checkpoint'] = None
+        config.pop('lora_scales', None)
+        config.pop('expected_lora_tensors', None)
     for key in PATH_KEYS:
+        if key == 'checkpoint' and not config['use_lora']:
+            continue
         if not config.get(key):
             raise ValueError('Missing render config field: '+key)
         value = Path(config[key]).expanduser()
@@ -48,7 +57,7 @@ def guide_recipe(config, recipe):
     guide_config['reference_run'] = guide_config.pop('guide_reference_run')
     dependencies = ('rendering/generate.py', 'rendering/runtime.py', 'rendering/audio.py',
                     'rendering/align.py', 'rendering/retry.py', 'rendering/select.py',
-                    'conditioning.py', 'selection.py', 'rendering/midi_plan.py')
+                    'conditioning.py', 'selection.py', 'language.py', 'rendering/midi_plan.py')
     identity = dict(config=guide_config, assets={k:v for k,v in recipe.items()
         if k.endswith('sha256') and k not in ('code_sha256', 'reference_sha256')},
         code={k:recipe['code_sha256'][k] for k in dependencies})
@@ -66,8 +75,8 @@ def main(config_file, out):
     recipe = dict(config=config, seed_vc=seed_runtime, guide_reference_sha256=guide_reference['sha256'],
         code_sha256={str(p.relative_to(package.parent)): sha(p) for p in sorted(sources)},
         score_sha256=sha(config['score']), reference_sha256=sha(reference['audio']),
-        checkpoint_sha256=sha(Path(config['checkpoint'])/'lora_weights.safetensors'),
-        checkpoint_config_sha256=sha(Path(config['checkpoint'])/'lora_config.json'),
+        checkpoint_sha256=sha(Path(config['checkpoint'])/'lora_weights.safetensors') if config['use_lora'] else None,
+        checkpoint_config_sha256=sha(Path(config['checkpoint'])/'lora_config.json') if config['use_lora'] else None,
         base_sha256=sha(Path(config['base_model'])/'model.safetensors'),
         audiovae_sha256=sha(Path(config['base_model'])/'audiovae.pth'),
         aligner_sha256=sha(Path(config['tifa_weights'])/'model.pt'),
@@ -129,8 +138,10 @@ def main(config_file, out):
         with selection_lock(guide_root):
             base = guide_root/'generation'
             arguments = ['--out',base,'--target',target_file,'--reference',reference_file,
-                         '--checkpoint',config['checkpoint'],'--stems',config['stems'],
+                         '--stems',config['stems'],
                          '--batch-size',config.get('batch_size',4)]
+            if config['use_lora']:
+                arguments.extend(['--checkpoint',config['checkpoint']])
             if config.get('whole_lines',True):
                 arguments.append('--whole-lines')
             stage('generate',vr,'generate',arguments)

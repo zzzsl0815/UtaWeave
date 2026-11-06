@@ -67,7 +67,7 @@ $('fetch-lyrics').addEventListener('click',() => action(async () => {
 },$('fetch-lyrics')));
 $('prepare').addEventListener('click',() => action(async () => {
   saveEditorDraft();
-  const request = {mode,lyrics_text:$('lyrics-text').value,lyrics_url:$('lyrics-url').value.trim(),bpm:Number($('bpm').value)};
+  const request = {mode,language:$('chinese-mode').checked?'zh':'ja',lyrics_text:$('lyrics-text').value,lyrics_url:$('lyrics-url').value.trim(),bpm:Number($('bpm').value)};
   if (mode === 'midi') {
     if (!uploads.midi) throw Error('请先上传 MIDI。');
     Object.assign(request,{midi_asset:uploads.midi,track:Number($('midi-track').value),accompaniment_asset:uploads.accompaniment || null});
@@ -87,7 +87,9 @@ function updateReference() {
 $('reference-mode').addEventListener('change',updateReference);
 function format(seconds) { return `${Math.floor(seconds/60)}:${(seconds%60).toFixed(2).padStart(5,'0')}`; }
 function pitchName(p) { return p ? ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'][p%12] + (Math.floor(p/12)-1) : '未知'; }
+const isChinese=()=>prepared?.language==='zh';
 function showRomaji(node,reading,needsReadingHint='含汉字时，请应用本句以更新读音') {
+  node.hidden=isChinese();if(node.hidden){node.textContent='';return;}
   const result=romanizeReading(reading);
   node.textContent=`罗马音：${result.text || '—'}${result.needsReading?' · '+needsReadingHint:''}`;
 }
@@ -102,7 +104,7 @@ function createReadingEditor(input,preview,value,{kind,onEdit,onPreview,state}={
     onPreview?.(editor.canonical);
   };
   editor.setMode=mode=>{
-    editor.mode=mode;input.value=mode==='romaji'?readingToRomajiInput(editor.canonical):editor.canonical;render();
+    editor.mode=isChinese()?'native':mode;input.value=editor.mode==='romaji'?readingToRomajiInput(editor.canonical):editor.canonical;render();
   };
   editor.setCanonical=value=>{editor.canonical=value;editor.error='';editor.setMode(readingInputMode);};
   editor.snapshot=()=>({raw:input.value,mode:editor.mode,error:editor.error});
@@ -117,7 +119,7 @@ function createReadingEditor(input,preview,value,{kind,onEdit,onPreview,state}={
     render();onEdit?.(editor);
   };
   input.addEventListener('input',convert);editor.setMode(readingInputMode);
-  if(state){editor.mode=state.mode;input.value=state.raw;editor.error=state.error || '';render();}
+  if(state&&(!isChinese()||state.mode==='native')){editor.mode=state.mode;input.value=state.raw;editor.error=state.error || '';render();}
   readingEditors.push(editor);return editor;
 }
 function requireNoteReadings(){
@@ -136,7 +138,7 @@ function mappingStatus() {
   const missing = labels.filter(v => !v.trim()).length;
   const aligned=prepared?.alignment;
   $('mapping-status').textContent = `${labels.length-missing} / ${labels.length} 音符已填写${missing ? `，还有 ${missing} 个空项` : ''}${prepared?.unmatched_moras ? `；还有 ${prepared.unmatched_moras} 个读音单元未分配，请修正对应，不要遗漏。` : ''}`;
-  const annotated=value=>`${value} (${romanizeReading(value).text})`;
+  const annotated=value=>isChinese()?value:`${value} (${romanizeReading(value).text})`;
   const extra=aligned ? aligned.phrases.flatMap(p=>p.unassigned.map(i=>`第 ${p.id+1} 句：${annotated(p.units[i].text)}`)) : (prepared?.reading?.moras?.slice(prepared.notes.length) || []).map(annotated);
   $('unassigned-lyrics').hidden=!extra.length;
   $('unassigned-lyrics').textContent=extra.length ? `未分配的读音（${extra.length} 个单元）：\n${extra.join(' ')}\n\n请修正分句范围或读音并重新分配。` : '';
@@ -172,16 +174,18 @@ function showPrepared(data, saved, draft=null) {
   $('segment-panel').hidden=data.mode!=='midi';$('segment-result').hidden=true;
   $('connect-short-rests').checked=draft?(draft.fields?.['connect-short-rests']??$('connect-short-rests').checked):Boolean(saved?.connect_short_rests);
   if(draft){readingInputMode=draft.reading_mode;phraseJob=current;phraseDrafts=new Map(draft.phrase_drafts);}
+  if(isChinese())readingInputMode='native';
+  $('chinese-mode').checked=isChinese();$('reading-mode-panel').hidden=isChinese();$('romaji-help').hidden=isChinese();
   $('reading-input-mode').value=readingInputMode;readingInputHelp();
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
   $('score-summary').replaceChildren();
-  for (const text of [`${data.notes.length} 个${data.mode==='midi'?'音符':'歌词单元'}`,`${data.bpm.toFixed(1)} BPM`,`${data.notes.at(-1).end.toFixed(1)} 秒`]) {
+  for (const text of [isChinese()?'中文 · 原版 VR（无 LoRA）':'日语 · VR + 日语 LoRA',`${data.notes.length} 个${data.mode==='midi'?'音符':'歌词单元'}`,`${data.bpm.toFixed(1)} BPM`,`${data.notes.at(-1).end.toFixed(1)} 秒`]) {
     const span=document.createElement('span');span.textContent=text;$('score-summary').append(span);
   }
   $('score-warning').textContent=data.warnings.join(' ');
   $('original-lyrics').textContent=data.lyrics.original || '没有独立歌词原文';$('auto-reading').textContent=data.reading?.reading || '';
-  showRomaji($('auto-romaji'),data.reading?.reading || '');$('auto-romaji').hidden=!data.reading?.reading;
-  $('mapping-hint').textContent=data.mode==='midi'?'每行对应一个音符，填写日语假名或英文单词。一个音符可填写多个拍音；同一字跨多个连续音符时，后续音符填 -。不演唱的音符填 SP。MIDI 中的原有休止自动保留。':'每行对应自动标注的一个歌词单元，可修改假名读音。此处保持音符及时间不变；如需修改旋律，可使用 MIDI 入口。';
+  showRomaji($('auto-romaji'),data.reading?.reading || '');$('auto-romaji').hidden=isChinese()||!data.reading?.reading;
+  $('mapping-hint').textContent=isChinese()?(data.mode==='midi'?'直接填写汉字或英文单词；一个音符可填多个字。同一字跨连续音符时，后续填 -；不演唱填 SP。多音字仍需试听核对。':'直接修正汉字或英文歌词；保留原有音符及时间。'):data.mode==='midi'?'每行对应一个音符，填写日语假名或英文单词。一个音符可填写多个拍音；同一字跨多个连续音符时，后续音符填 -。不演唱的音符填 SP。MIDI 中的原有休止自动保留。':'每行对应自动标注的一个歌词单元，可修改假名读音。此处保持音符及时间不变；如需修改旋律，可使用 MIDI 入口。';
   $('confirmed').checked=false;$('export-midi').hidden=data.mode!=='midi';$('note-rows').replaceChildren();
   data.notes.forEach((note,i)=>{
     const row=document.createElement('tr');if(!labels[i])row.classList.add('missing');
@@ -334,7 +338,7 @@ function showPhrases(){
   if(phraseJob!==current){phraseDrafts.clear();phraseJob=current;}
   const a=prepared.alignment;$('phrase-panel').hidden=!a;$('note-editor').open=!a;
   if(!a)return;
-  $('phrase-summary').textContent=`${a.phrases.length} 句 · ${a.total_units-a.unassigned_units} / ${a.total_units} 个读音单元已分配（日语拍音 / 英文词） · ${a.review_phrases} 句需优先核对`;
+  $('phrase-summary').textContent=`${a.phrases.length} 句 · ${a.total_units-a.unassigned_units} / ${a.total_units} 个读音单元已分配（${isChinese()?'汉字 / 英文词':'日语拍音 / 英文词'}） · ${a.review_phrases} 句需优先核对`;
   $('lrc-offset').value=a.clock.offset_seconds;$('lrc-scale').value=a.clock.scale;
   $('phrase-list').replaceChildren();
   a.phrases.forEach(p=>{

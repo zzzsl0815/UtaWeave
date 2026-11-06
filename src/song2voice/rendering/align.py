@@ -1,4 +1,4 @@
-"""Align generated audio against the frozen Japanese/English phone sequence."""
+"""Align generated audio against the frozen, language-qualified phones."""
 import argparse
 import json
 from pathlib import Path
@@ -46,7 +46,9 @@ def main(out):
             phones.extend(w['phones']); mapping.extend([i]*len(w['phones']))
         with torch.inference_mode():
             spec=model.spectrogram(wave[None],torch.tensor([duration],device='cuda'))
-            aligned=model.align(spec,tokens=torch.tensor([[vocab.encode(p,'ja') for p in phones]],device='cuda'),
+            tokens=[vocab.encode(p,config.get('language','ja')) for p in phones]
+            if any(t is None for t in tokens):raise ValueError('Score contains phones missing from TiFA vocabulary')
+            aligned=model.align(spec,tokens=torch.tensor([tokens],device='cuda'),
                 groups=torch.tensor([[i+1 for i in mapping]],device='cuda'),unit='frame',skip_penalty=.5)
         spans=np.clip(aligned.spans[0].cpu().numpy()*model.timestep,0,len(audio)/sr)
         units=[]

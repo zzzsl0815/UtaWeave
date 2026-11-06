@@ -1,7 +1,7 @@
 """Audio-only Vocal2Midi labeling; no LRC, downloaded lyrics or romaji input.
 
 Calls upstream slicing, ASR text preparation, TiFA and GAME. A small language
-router selects the upstream Japanese/English paths for code-switched singing.
+router selects the upstream Japanese/Mandarin/English paths for mixed singing.
 VR serialization is a separate output adapter, not a pronunciation correction.
 """
 import argparse
@@ -46,6 +46,8 @@ def bounded_session_threads(count):
 
 
 def validate_audio_only_config(config):
+    if config.get('language','ja') not in ('ja','zh','en'):
+        raise ValueError('Unsupported song language')
     supplied = FORBIDDEN_INPUTS.intersection(config)
     if supplied:
         raise ValueError('Audio-only labeling does not accept reference inputs: '+', '.join(sorted(supplied)))
@@ -53,9 +55,14 @@ def validate_audio_only_config(config):
         raise ValueError('Audio-only labeling requires an audio file')
 
 
-def text_languages(text):
+def text_languages(text, primary='ja'):
     langs = []
-    if re.search(r'[\u3040-\u30ff\u3400-\u9fff]', text): langs.append('ja')
+    if re.search(r'[\u3040-\u30ff]',text):
+        if primary=='zh':raise ValueError('中文识别结果含日语假名，请核对输入语言')
+        langs.append('ja')
+    if re.search(r'[\u3400-\u9fff]', text):
+        lang='zh' if primary=='zh' else 'ja'
+        if lang not in langs:langs.append(lang)
     if re.search(r'[A-Za-z]', text): langs.append('en')
     return langs
 
@@ -66,7 +73,7 @@ def language_spans(words, duration):
     for word in words:
         if word.text in NON_LYRICS: continue
         tags = {p.text.split('/')[0] for p in word.phonemes if '/' in p.text}
-        if len(tags) != 1 or not tags <= {'ja', 'en'}:
+        if len(tags) != 1 or not tags <= {'ja', 'zh', 'en'}:
             raise ValueError('Mixed-language routing needs explicit phone language tags')
         language = tags.pop()
         if groups and groups[-1]['language'] == language:
@@ -122,13 +129,14 @@ def record_empty_asr(row, rms, typical_rms):
 
 
 class MixedG2P:
-    def __init__(self, pipeline): self.pipeline = pipeline
+    def __init__(self, pipeline, primary='ja'): self.pipeline, self.primary = pipeline, primary
     def convert(self, text, **kwargs):
-        return self.pipeline.convert(text, languages=['ja','en'])
+        return self.pipeline.convert(text, languages=list(dict.fromkeys([self.primary,'en'])))
 
 
 def main(config):
     validate_audio_only_config(config)
+    primary_language=config.get('language','ja')
     use_upstream(config['upstream_repo'])
     import numpy as np
     import soundfile as sf
@@ -199,7 +207,7 @@ def main(config):
         # Match upstream's explicit song-language setting. Unconstrained
         # detection can translate short sung fragments into another language.
         # Read raw text before the upstream language filter for code switching.
-        primary = {'ja':'Japanese','en':'English'}[config.get('language','ja')]
+        primary = {'ja':'Japanese','zh':'Chinese','en':'English'}[primary_language]
         found = asr.transcribe(audio=[r['audio'] for r in rows[begin:begin+4]],language=primary,context='')
         detection.extend(dict(row,detected_language=p.language,raw_text=p.text)
                          for row,p in zip(rows[begin:begin+4],found))
@@ -210,12 +218,12 @@ def main(config):
         tifa = load_tifa_model(config['tifa_model'],device='cpu')
         g2p = build_g2p_pipeline(config['tifa_model'],
             japanese_g2p_engine='kashi-g2p-onnx',kashi_g2p_model_dir=config.get('kashi_model'))
-        romaji = RomajiASROnnxModel.from_model_path(config['romaji_model'],device='cpu')
+        romaji = RomajiASROnnxModel.from_model_path(config['romaji_model'],device='cpu') if primary_language!='zh' else None
 
     routing = out/'routing'; routing.mkdir(exist_ok=True)
     mixed_rows = []
     for row in detection:
-        langs = text_languages(row['raw_text'])
+        langs = text_languages(row['raw_text'],primary_language)
         if not langs: langs=[config.get('language','ja')]
         if len(langs)>1:
             (routing/f'chunk_{row["index"]}.txt').write_text(row['raw_text'],encoding='utf-8')
@@ -224,10 +232,10 @@ def main(config):
             if not destination.exists():os.link(row['audio'],destination)
             mixed_rows.append(row)
     with bounded_session_threads(config.get('cpu_threads',4)):
-        mixed_pred, _ = run_tifa_fa(tifa,routing,language='mixed',g2p_pipeline=MixedG2P(g2p)) if mixed_rows else ({},{})
+        mixed_pred, _ = run_tifa_fa(tifa,routing,language='mixed',g2p_pipeline=MixedG2P(g2p,primary_language)) if mixed_rows else ({},{})
     final_rows = []; route_audit = []
     for row in detection:
-        langs = text_languages(row['raw_text']) or [config.get('language','ja')]; duration=row['end_seconds']-row['start_seconds']
+        langs = text_languages(row['raw_text'],primary_language) or [primary_language]; duration=row['end_seconds']-row['start_seconds']
         if len(langs)==1: spans=[dict(language=langs[0],start=0.,end=duration)]
         else:
             if f'chunk_{row["index"]}' not in mixed_pred:
@@ -249,11 +257,18 @@ def main(config):
         english_predictions=asr.transcribe(audio=[r['audio'] for r in english],language='English',
                           context=DEFAULT_QWEN_ASR_PROMPT_EN) if english else []
         english_results=iter(_sanitize_qwen_asr_results([dict(text=p.text) for p in english_predictions],'en'))
+        chinese=[r for r in group if r['language']=='zh']
+        chinese_predictions=asr.transcribe(audio=[r['audio'] for r in chinese],language='Chinese',context='') if chinese else []
+        chinese_results=iter(_sanitize_qwen_asr_results([dict(text=p.text) for p in chinese_predictions],'zh'))
         for row in group:
             index=row['line_index'];directory=Path(row['audio']).parent
             if row['language']=='en':
                 raw=next(english_results)
                 chars, logs=process_asr_to_phonemes([raw],[index],directory,'en',None,lyric_output_mode='word')
+                row.update(text=raw['text'],raw_asr=raw,chars=chars.get(f'chunk_{index}',[]),upstream_log=logs)
+            elif row['language']=='zh':
+                raw=next(chinese_results)
+                chars,logs=process_asr_to_phonemes([raw],[index],directory,'zh',None,lyric_output_mode='hanzi')
                 row.update(text=raw['text'],raw_asr=raw,chars=chars.get(f'chunk_{index}',[]),upstream_log=logs)
             else:
                 info=sf.info(row['audio'])
@@ -277,7 +292,7 @@ def main(config):
     if not final_rows: raise ValueError('No recognized lyric segments; cannot render a song')
     del asr;gc.collect();torch.cuda.empty_cache()
     predictions={};displays={}
-    for language in ['ja','en']:
+    for language in ['ja','zh','en']:
         directory=out/'alignment_inputs'/language
         if not directory.exists():continue
         with bounded_session_threads(config.get('cpu_threads',4)):
@@ -302,9 +317,9 @@ def main(config):
         if language=='ja':
             data['word']=[w if w in NON_LYRICS else _direct_moras_to_display_tokens('ja','kana',[w])[0] for w in data['word']]
         else:
-            # Phones are aligner metadata. VR receives the original English
-            # words and their native per-syllable GAME note sequence.
-            data['ph']=[p if p in NON_LYRICS or '/' in p else 'en/'+p for p in data['ph']]
+            # Phones are aligner metadata. VR receives original Chinese
+            # characters / English words and the native GAME note sequence.
+            data['ph']=[p if p in NON_LYRICS or '/' in p else language+'/'+p for p in data['ph']]
         data.update(item_name=f'{config["song_id"]}#{index:02d}',song_id=config['song_id'],line_index=index,
             original_lyric=row['text'],source_window=row,bpm=config['bpm'],has_score=True,language=language,
             pronunciation_provenance=dict(source='upstream_ASR_only',reference_used=False,raw_asr=row['raw_asr']),
@@ -325,7 +340,7 @@ def main(config):
         references_used=False,lyrics_input_used=False,lrc_input_used=False,
         unrecognized_low_energy_segments=len(empty_rows),unrecognized_audio_preserved=True,
         score_sha256=sha(out/'score.vr.json'),quality_status='not_assessed',
-        runtime_note='Qwen3-ASR Transformers/CUDA; upstream Japanese/English TiFA/GAME code'))
+        runtime_note='Qwen3-ASR Transformers/CUDA; upstream Japanese/Mandarin/English TiFA/GAME code'))
 
 
 def cli():

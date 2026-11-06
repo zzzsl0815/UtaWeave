@@ -28,6 +28,8 @@ def build_report(manifest_path):
                 raise ValueError('Export hash mismatch: '+name+'/'+kind)
             urls[name][kind] = quote(path.relative_to(root).as_posix())
     duration = float(outputs['mix']['seconds'])
+    language = '中文普通话' if manifest.get('language') == 'zh' else '日语'
+    model = '原版 VR · 未加载 LoRA' if manifest.get('use_lora') is False else 'VR · 日语 LoRA'
     tracks, downloads = [], []
     for name, label in [('mix', '伴奏混音'), ('vocal', '纯人声')]:
         pressed = 'true' if name == 'mix' else 'false'
@@ -48,6 +50,7 @@ section{{background:white;border-radius:12px;padding:20px;margin:20px 0}}button{
 button[aria-pressed=true]{{background:#215cb1;color:white}}#seek{{width:100%}}audio{{width:100%}}li{{margin:10px 0}}
 a{{color:#215cb1}}#playback-time{{font-variant-numeric:tabular-nums}}</style>
 <h1>VR＋Seed-VC 整曲试听</h1>
+<p>{language} · {model} → Seed-VC</p>
 <p>先听咬字和演唱节奏，再比较目标音色、高音稳定性与句间衔接。自动检查通过不代表音质合格。</p>
 <section><div id="tracks">{''.join(tracks)}</div><p id="current">当前：伴奏混音。切换音轨时保留播放位置。</p>
 <audio id="main" preload="metadata" data-duration="{duration}" src="{urls['mix']['mp3']}"></audio>

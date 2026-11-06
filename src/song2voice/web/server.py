@@ -169,6 +169,8 @@ class Handler(ReportHandler):
                 request=self.body()
                 if path=='/api/lyrics':self.send_json(fetch_lyrics(request['url']));return
                 if path=='/api/jobs':
+                    from ..language import song_language
+                    request['language']=song_language(request)
                     mode=request.get('mode')
                     if mode not in ('midi','song'):raise ValueError('请选择 MIDI 或原曲入口')
                     if mode=='midi':

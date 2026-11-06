@@ -19,7 +19,7 @@ class RenderConversionTests(unittest.TestCase):
     def test_target_timbre_changes_do_not_invalidate_guide_cache(self):
         cfg=dict(score='score',reference_run='alice',guide_reference_run='fixed',seed_vc_config='seed',seed=1)
         names=('rendering/generate.py','rendering/runtime.py','rendering/audio.py','rendering/align.py',
-               'rendering/retry.py','rendering/select.py','conditioning.py','selection.py','rendering/midi_plan.py')
+               'rendering/retry.py','rendering/select.py','conditioning.py','selection.py','language.py','rendering/midi_plan.py')
         recipe=dict(code_sha256={n:n for n in names},reference_sha256='alice',guide_reference_sha256='fixed',score_sha256='score')
         first=guide_recipe(cfg,recipe)
         cfg['reference_run']='bob';cfg['seed_vc_config']='more_steps';recipe['reference_sha256']='bob'
@@ -28,6 +28,9 @@ class RenderConversionTests(unittest.TestCase):
         self.assertNotEqual(first,guide_recipe(cfg,recipe))
         changed=guide_recipe(cfg,recipe)
         recipe['code_sha256']['rendering/midi_plan.py']='new planner'
+        self.assertNotEqual(changed,guide_recipe(cfg,recipe))
+        changed=guide_recipe(cfg,recipe)
+        cfg.update(language='zh',use_lora=False,checkpoint=None)
         self.assertNotEqual(changed,guide_recipe(cfg,recipe))
 
     def test_conversion_preserves_plan_and_requires_new_alignment(self):

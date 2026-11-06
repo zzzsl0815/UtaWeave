@@ -36,7 +36,7 @@ def main(parent,out):
     torch.set_num_threads(4);torch.set_num_interop_threads(1)
     torch.backends.cuda.matmul.allow_tf32=False;torch.backends.cudnn.allow_tf32=False
     torch.set_float32_matmul_precision('highest')
-    model, _ = load_model(Path(base['checkpoint']))
+    model, _ = load_model(Path(base['checkpoint']) if base.get('checkpoint') else None)
     prompt=torch.load(parent/'inputs.pt',weights_only=False)['prompt'].float()
     folder=out/'chunks';folder.mkdir(exist_ok=True)
     for start in range(0,len(chunks),4):

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+from ..language import use_lora
 
 
 def runtime():
@@ -57,22 +58,30 @@ def configure_lora(model):
     return audit
 
 
-def load_model(checkpoint):
-    import torch
+def load_model(checkpoint=None):
     activate_vocalrender()
     from vocalrender.training.model_factory import detect_model_classes
-    config = json.loads((Path(checkpoint)/'lora_config.json').read_text())
     # The original training checkpoint embeds an absolute base_model path.
     # Always resolve the base model from this machine's runtime config.
     base = runtime()['base_model']
     classes = detect_model_classes(base)
-    model = classes.model_cls.from_local(base, training=True,
-        lora_config=classes.lora_config_cls(**config['lora_config']))
+    enabled = use_lora(runtime())
+    options = {}
+    if enabled:
+        if not checkpoint:
+            raise ValueError('Japanese LoRA mode requires a checkpoint')
+        config = json.loads((Path(checkpoint)/'lora_config.json').read_text())
+        options['lora_config'] = classes.lora_config_cls(**config['lora_config'])
+    # Base mode never constructs adapters or reads any LoRA files.
+    model = classes.model_cls.from_local(base, training=True, **options)
     model.config.dtype = 'bfloat16'
     model.device = 'cuda:0'
     model = model.float().to('cuda:0').eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)
+    if not enabled:
+        print('VR_MODEL base; language='+runtime().get('language', 'ja')+'; LoRA not loaded', flush=True)
+        return model, {}
     loaded, skipped = model.load_lora_weights(str(checkpoint), device='cuda:0')
     if skipped or not loaded:
         raise ValueError(f'Incomplete LoRA load: {len(loaded)} loaded, {len(skipped)} skipped')

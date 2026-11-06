@@ -1,4 +1,6 @@
 {
+  "language": "ja",
+  "use_lora": true,
   "score": "../runs/target-score/score.vr.json",
   "reference_run": "../runs/voice-reference",
   "stems": "../runs/target/stems",

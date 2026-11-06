@@ -88,8 +88,12 @@ def require_edited_mapping(prepared,labels):
         raise ValueError(f"自动歌词草稿还有 {prepared['unmatched_moras']} 个拍音未分配，不能直接生成。请先修改逐音符对应：一个音符可填多个拍音，延音填 -；也可返回输入页修正歌词范围。")
 
 
-def phonemize(text=None, readings=None, texts=None, english_runtime=None):
-    """Japanese moras and English words, with the existing TiFA English G2P."""
+def phonemize(text=None, readings=None, texts=None, english_runtime=None, language='ja', indexed=False):
+    """Chinese characters or Japanese moras, plus explicit English words."""
+    from .language import song_language
+    if song_language({'language':language}) == 'zh':
+        from .chinese_g2p import phonemize_chinese
+        return phonemize_chinese(text, readings, texts, english_runtime, indexed)
     import pyopenjtalk
     import unicodedata
     from functools import lru_cache
@@ -201,7 +205,7 @@ def notes_to_score(notes, labels, phones, bpm, lead_in=.5, phrases=None):
                 row['note'].append(quantize_duration(gap,bpm));row['ph'].append('SP');row['ph2word'].append(owner)
             owner=len(row['word']);duration=end-start
             row['word'].append(label);row['word_dur'].append(duration)
-            phonemes=['SP'] if label in ('SP','AP') else phones[label]
+            phonemes=['SP'] if label in ('SP','AP') else (phones[note_index] if isinstance(phones,list) else phones[label])
             row['ph'].extend(phonemes);row['ph2word'].extend([owner]*len(phonemes))
         row['pitch'].append(0 if label in ('SP','AP') else pitch);row['pitch_dur'].append(duration)
         row['pitch2word'].append(owner);row['note'].append(quantize_duration(duration,bpm));row['note_indices'].append(note_index);cursor=end

@@ -73,3 +73,48 @@ class EditorDraftBrowserTests(unittest.TestCase):
                     self.assertEqual(json.loads((job/'prepared.json').read_text()),prepared)
                     self.assertFalse((job/'process.json').exists());self.assertEqual(errors,[])
             finally:server.shutdown();server.server_close();thread.join()
+
+    def test_chinese_switch_and_hanzi_draft_roundtrip(self):
+        import mido
+        with tempfile.TemporaryDirectory() as tmp, sync_playwright() as pw:
+            executable=pw.chromium.executable_path
+            if not Path(executable).exists():self.skipTest('Playwright Chromium is not installed')
+            root=Path(tmp);(root/'uploads').mkdir();job=root/'jobs'/('c'*32);job.mkdir(parents=True)
+            notes=[dict(start=1+i*.5,end=1.5+i*.5,pitch=60) for i in range(4)]
+            prepared=dict(mode='midi',language='zh',bpm=120,notes=notes,labels=list('春风吹过'),revision='chinese',
+                alignment=None,unmatched_moras=0,warnings=[],lyrics={'original':'春风吹过'},reading={'reading':'春 风 吹 过'})
+            atomic_json(job/'prepared.json',prepared)
+            atomic_json(job/'status.json',dict(id=job.name,status='awaiting_score',stage='review',message='test',created_at=time.time(),updated_at=time.time()))
+            midi=mido.MidiFile();track=mido.MidiTrack();midi.tracks.append(track)
+            track.extend([mido.Message('note_on',note=60,time=0),mido.Message('note_off',note=60,time=480)])
+            midi.save(root/'test.mid')
+            server=ThreadingHTTPServer(('127.0.0.1',0),partial(Handler,config={'workspace':str(root)}))
+            thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+            try:
+                with pw.chromium.launch(headless=True,executable_path=executable,args=['--no-sandbox']) as browser:
+                    page=browser.new_page();errors=[];submitted=[]
+                    page.on('pageerror',lambda error:errors.append(str(error)))
+                    def route_jobs(route):
+                        if route.request.method=='POST':
+                            submitted.append(route.request.post_data_json)
+                            route.fulfill(json={'id':job.name})
+                        else:route.continue_()
+                    page.route('**/api/jobs',route_jobs)
+                    page.goto(f'http://127.0.0.1:{server.server_port}/')
+                    page.locator('[data-mode=midi]').click();page.locator('#chinese-mode').check()
+                    with page.expect_response('**/api/upload?*'):
+                        page.locator('#midi-file').set_input_files(str(root/'test.mid'))
+                    page.wait_for_function("document.getElementById('midi-file-info').textContent.includes('已上传')")
+                    page.locator('#lyrics-text').fill('春风吹过');page.locator('#prepare').click()
+                    page.wait_for_function("document.getElementById('note-0')?.value==='春'")
+                    self.assertEqual(submitted[0]['language'],'zh')
+                    self.assertTrue(page.locator('#reading-mode-panel').is_hidden())
+                    self.assertTrue(page.locator('#note-romaji-0').is_hidden())
+                    self.assertIn('无 LoRA',page.locator('#score-summary').inner_text())
+                    page.locator('#note-0').fill('秋')
+                    page.wait_for_function("document.getElementById('draft-status').textContent.includes('已保存到服务器')")
+                    page.reload();page.wait_for_function("document.getElementById('note-0')?.value==='秋'")
+                    self.assertEqual(page.locator('#note-preview-0').inner_text(),'将使用：秋')
+                    self.assertEqual(page.locator('#reading-input-mode').input_value(),'native')
+                    self.assertEqual(errors,[])
+            finally:server.shutdown();server.server_close();thread.join()

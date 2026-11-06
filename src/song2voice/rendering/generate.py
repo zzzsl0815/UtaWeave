@@ -17,6 +17,7 @@ from ..selection import require_reference
 from ..conditioning import check_conditioning, compile_chunk_annotation, require_conditioning, compiled_duration
 from .audio import intervals, activity
 from .runtime import runtime, load_model, activate_vocalrender
+from ..language import use_lora, song_language
 
 
 def read(path):
@@ -142,6 +143,10 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None, source_mode=None, c
 
 
 def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoint, stems):
+    enabled = use_lora(runtime())
+    if enabled and checkpoint is None:
+        raise ValueError('Japanese LoRA mode requires --checkpoint')
+    checkpoint = Path(checkpoint) if enabled else None
     import torch
     activate_vocalrender()
     from vocalrender.preprocessing import rebuild_svs_prompt, create_lightweight_preprocessor
@@ -165,7 +170,8 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
         chunk['estimated_duration']=compiled_duration(chunk['annotation'])
     write(out/'compiled_condition_preflight.json',require_conditioning([c['annotation'] for c in split['chunks']]))
     recipe=dict(score_sha256=sha(target['score']),reference_sha256=sha(selected['audio']),
-        checkpoint_sha256=sha(checkpoint/'lora_weights.safetensors'),checkpoint_config_sha256=sha(checkpoint/'lora_config.json'),
+        checkpoint_sha256=sha(checkpoint/'lora_weights.safetensors') if enabled else None,
+        checkpoint_config_sha256=sha(checkpoint/'lora_config.json') if enabled else None,
         stems={name:sha(stems/name) for name in ['vocal_native.wav','instrumental.wav']},
         batch_size=batch_size,whole_lines=whole_lines,seed_base=runtime().get('seed',20261020),
         runtime=runtime(),base_model_sha256=sha(Path(runtime()['base_model'])/'model.safetensors'),
@@ -182,7 +188,8 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
         progress(out,'complete_reused',chunks=split['chunk_count']);return
     write(out/'chunk_plan.json', split)
     manifest = dict(status='loading', target=target, reference=selected, plan=split,
-        checkpoint=str(checkpoint), checkpoint_sha256=sha(checkpoint/'lora_weights.safetensors'),
+        checkpoint=str(checkpoint) if enabled else None, checkpoint_sha256=recipe['checkpoint_sha256'],
+        language=song_language(runtime()), use_lora=enabled,
         score_sha256=sha(target['score']), stems=str(stems), results=[],recipe_sha256=recipe_sha,
         protocol=dict(source_mode=runtime().get('source_mode', 'song'), native_eos=True, min_len=2, cfg_value=2., inference_timesteps=10,
             batch_size=batch_size, seed_base=runtime().get('seed',20261020), lora_scales=runtime().get('lora_scales',{}),
@@ -245,7 +252,8 @@ if __name__=='__main__':
     ap.add_argument('--out',type=Path,required=True)
     ap.add_argument('--batch-size',type=int,default=4)
     ap.add_argument('--whole-lines',action='store_true')
-    for name in ['target','reference','checkpoint','stems']:
+    ap.add_argument('--checkpoint',type=Path)
+    for name in ['target','reference','stems']:
         ap.add_argument('--'+name,type=Path,required=True)
     args=ap.parse_args()
     generate(args.out,args.batch_size,args.whole_lines,args.target,args.reference,args.checkpoint,args.stems)

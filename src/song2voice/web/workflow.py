@@ -13,6 +13,7 @@ import time
 
 from ..selection import atomic_json, require_reference
 from ..midi_score import inspect_midi, split_lyrics_text, notes_to_score, edit_score, require_edited_mapping
+from ..language import song_language
 
 
 def read(path):
@@ -92,6 +93,7 @@ def download(cfg, url, out):
 
 def prepare(cfg, job, request):
     from ..references import prepare_stems
+    language=song_language(request)
     stage(job,'input','读取输入与歌词')
     if request['mode']=='midi':
         source=asset(cfg,request['midi_asset']);info=inspect_midi(source)
@@ -107,13 +109,13 @@ def prepare(cfg, job, request):
             stage(job,'lyrics','按歌词分句转换读音，匹配 MIDI 时间轴')
             if len(parsed['lines'])>=2:
                 if parsed['untimed_lines']:raise ValueError('LRC 中有未带时间戳的正文，请补齐时间戳或改用纯文本')
-                readings=g2p(cfg,job,texts=[line['text'] for line in parsed['lines']])['lines']
+                readings=g2p(cfg,job,texts=[line['text'] for line in parsed['lines']],language=language)['lines']
                 alignment=align_lrc(track['notes'],parsed,readings)
                 labels=alignment.pop('labels')
                 draft=dict(reading='\n'.join(r['reading'] for r in readings),moras=[m for r in readings for m in r['moras']],
                     warning='已按 LRC 分句匹配并分配读音；请优先核对标记的乐句，时间和分配分数不是准确率。')
             else:
-                draft=g2p(cfg,job,text=lyric['text'])
+                draft=g2p(cfg,job,text=lyric['text'],language=language)
                 labels=[draft['moras'][i] if i<len(draft['moras']) else '' for i in range(len(track['notes']))]
         if not any(labels):raise ValueError('MIDI 没有内嵌歌词，请输入歌词文本或歌词链接')
         warnings=[x for x in [info['warning'],draft['warning']] if x]
@@ -134,7 +136,7 @@ def prepare(cfg, job, request):
         for key in ('upstream_repo','romaji_model','qwen_model','kashi_model','tifa_model','game_model'):
             annotation[key]=os.path.abspath(Path(cfg['annotation_config']).parent/Path(annotation[key]).expanduser())
         annotation.update(audio=str(job/'source-stems/stems/vocal_for_reference.wav'),out=str(job/'annotation'),
-                          song_id=job.name,bpm=request['bpm'])
+                          song_id=job.name,bpm=request['bpm'],language=language)
         atomic_json(job/'annotation.local.json',annotation)
         command([cfg['labeling_python'],'-m','song2voice.vocal2midi_native_worker','--config',job/'annotation.local.json'])
         score=read(job/'annotation/score.vr.json')
@@ -148,6 +150,7 @@ def prepare(cfg, job, request):
                 cursor+=duration
         prepared=dict(mode='song',notes=units,labels=[n['lyric'] for n in units],bpm=request['bpm'],lyrics=lyric,
                       warnings=['显示的是音频自动标注；网易云歌词仅供核对，没有直接替换自动标注。'],unmatched_moras=0)
+    prepared['language']=language
     prepared['revision']=str(time.time_ns())
     atomic_json(job/'prepared.json',prepared)
     state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='请核对音符、歌词读音与延音，再生成演唱',updated_at=time.time())
@@ -242,7 +245,7 @@ def realign(cfg,job,request):
         affected=set(range(old_left,old_right))|set(range(left,right))
         protected={i for i in affected if submitted[i]!=old_auto[i]}
         ranges[index]=(left,right)
-        readings[index]=g2p(cfg,job,texts=[content])['lines'][0]
+        readings[index]=g2p(cfg,job,texts=[content],language=song_language(prepared))['lines'][0]
         if not readings[index]['units']:raise ValueError('本句没有可识别的读音')
         result=build_alignment(prepared['notes'],parsed,readings,alignment['clock'],ranges)
         labels=list(submitted)
@@ -285,8 +288,14 @@ def render(cfg,job,request):
     require_edited_mapping(prepared,labels)
     stage(job,'score','检查歌词与音符对应')
     wanted=labels if prepared['mode']=='midi' else [x for x,y in zip(labels,prepared['labels']) if x!=y]
-    phones=g2p(cfg,job,readings=wanted) if wanted else {}
+    language=song_language(prepared)
+    phones=g2p(cfg,job,readings=wanted,language=language,indexed=language=='zh' and prepared['mode']=='midi') if wanted else {}
     runtime=template(cfg)
+    runtime.update(language=language,use_lora=language=='ja')
+    if language=='zh':
+        runtime['checkpoint']=None
+        runtime.pop('lora_scales',None)
+        runtime.pop('expected_lora_tensors',None)
     if prepared['mode']=='midi':
         score,offset=notes_to_score(prepared['notes'],labels,phones,prepared['bpm'],
                                     phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
@@ -297,6 +306,7 @@ def render(cfg,job,request):
         score=edit_score(read(job/'annotation/score.vr.json'),labels,phones)
         stems=job/'source-stems/stems';runtime['source_mode']='song'
     require_conditioning(score)
+    for row in score:row.setdefault('language',language)
     runtime['connect_short_rests']=request.get('connect_short_rests',False) if prepared['mode']=='midi' else False
     split=plan(score,whole_lines=True,stems=stems,connect_short_rests=runtime['connect_short_rests'])
     for chunk in split['chunks']:compiled_duration(compile_chunk_annotation(chunk,score[0]['bpm']))
