@@ -158,24 +158,35 @@ def phonemize(text=None, readings=None, texts=None, english_runtime=None):
     return phrase(text)
 
 
-def notes_to_score(notes, labels, phones, bpm, lead_in=.5):
+def notes_to_score(notes, labels, phones, bpm, lead_in=.5, phrases=None):
     if not notes or len(labels)!=len(notes): raise ValueError('每个音符都需要读音、延音 - 或休止 SP')
     if any(not str(s).strip() for s in labels):raise ValueError('仍有未分配歌词的音符')
     offset=max(0.,lead_in-float(notes[0]['start']))
     if notes[-1]['end']+offset>1200:raise ValueError('单次歌曲最长 20 分钟，请分段处理')
     source_bpm=bpm;bpm=conditioning_bpm(bpm)
+    owners=[None]*len(notes)
+    if phrases is not None:
+        last=0;ids=set()
+        for phrase in phrases:
+            left,right=phrase['note_start'],phrase['note_end'];ident=phrase['id']
+            if type(left) is not int or type(right) is not int or not last<=left<=right<=len(notes) or type(ident) is not int or ident in ids:
+                raise ValueError('LRC 分句范围必须有序、不重叠，且句子编号唯一')
+            owners[left:right]=[ident]*(right-left);last=right;ids.add(ident)
     score=[];row=None;cursor=None
-    for note,label in zip(notes,labels):
+    for note_index,(note,label) in enumerate(zip(notes,labels)):
         label=str(label).strip();start=float(note['start'])+offset;end=float(note['end'])+offset
         pitch=note['pitch']
         if not all(math.isfinite(x) for x in (start,end)) or end<=start or not 1<=pitch<=127:
             raise ValueError('MIDI 音符时间或音高无效')
         if cursor is not None and start<cursor-.001:raise ValueError('所选旋律轨有重叠音符，请选择单声部轨道')
-        if row is None or start-cursor>=.25:
+        # These are semantic lyric lines, not blocks delimited by MIDI note-off
+        # gaps. A tied syllable stays atomic even across a supplied LRC boundary.
+        if row is None or owners[note_index]!=row['phrase_id'] and label!='-':
             if label=='-':raise ValueError('新唱句的第一个音符不能是延音 -')
             row=dict(item_name=f'midi_{len(score):03d}',line_index=len(score),
                      source_window=dict(start_seconds=start),bpm=bpm,source_bpm=source_bpm,has_score=True,
-                     word=[],word_dur=[],pitch=[],pitch_dur=[],pitch2word=[],note=[],ph=[],ph2word=[])
+                     source_mode='midi',phrase_id=owners[note_index],has_lyric_phrases=phrases is not None,
+                     word=[],word_dur=[],pitch=[],pitch_dur=[],pitch2word=[],note=[],ph=[],ph2word=[],note_indices=[])
             score.append(row);cursor=start
         gap=max(0.,start-cursor)
         if label=='-':
@@ -186,13 +197,14 @@ def notes_to_score(notes, labels, phones, bpm, lead_in=.5):
             if gap>1e-5:
                 owner=len(row['word']);row['word'].append('SP');row['word_dur'].append(gap)
                 row['pitch'].append(0);row['pitch_dur'].append(gap);row['pitch2word'].append(owner)
+                row['note_indices'].append(None)
                 row['note'].append(quantize_duration(gap,bpm));row['ph'].append('SP');row['ph2word'].append(owner)
             owner=len(row['word']);duration=end-start
             row['word'].append(label);row['word_dur'].append(duration)
             phonemes=['SP'] if label in ('SP','AP') else phones[label]
             row['ph'].extend(phonemes);row['ph2word'].extend([owner]*len(phonemes))
         row['pitch'].append(0 if label in ('SP','AP') else pitch);row['pitch_dur'].append(duration)
-        row['pitch2word'].append(owner);row['note'].append(quantize_duration(duration,bpm));cursor=end
+        row['pitch2word'].append(owner);row['note'].append(quantize_duration(duration,bpm));row['note_indices'].append(note_index);cursor=end
     if not any(w not in ('SP','AP') for r in score for w in r['word']):raise ValueError('至少需要一个有歌词的音符')
     require_conditioning(score)
     return score,offset

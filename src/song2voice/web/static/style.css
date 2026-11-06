@@ -8,3 +8,5 @@
 
 #notice{pointer-events:none}
 .notice-close{pointer-events:auto;float:right;margin-left:12px;padding:0 6px;background:transparent;border:0;font-size:20px;line-height:1.2}
+
+#segment-rows td:last-child{min-width:200px;white-space:normal;overflow-wrap:anywhere}#segment-panel .table-wrap{max-height:420px}

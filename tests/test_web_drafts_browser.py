@@ -40,7 +40,13 @@ class EditorDraftBrowserTests(unittest.TestCase):
                     page=browser.new_page();errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
                     url=f'http://127.0.0.1:{server.server_port}/#job={job.name}'
                     page.goto(url);page.wait_for_function("document.getElementById('draft-status').textContent.includes('开始编辑')")
+                    page.locator('#segment-panel>summary').click();page.locator('#preview-segments').click()
+                    page.locator('#segment-result').wait_for(state='visible')
+                    self.assertEqual(page.locator('#segment-rows tr').count(),1)
+                    self.assertIn('1 段',page.locator('#segment-summary').inner_text())
+                    self.assertTrue(page.locator('#segment-rows .romaji-text').inner_text())
                     page.locator('#note-editor>summary').click();page.locator('#note-0').fill('k')
+                    self.assertTrue(page.locator('#segment-result').is_hidden())
                     page.locator('#phrase-review-only').uncheck();page.locator('#phrase-1>summary').click();page.locator('#phrase-reading-1').fill('kimi')
                     page.wait_for_function("document.getElementById('draft-status').textContent.includes('已保存到服务器')")
                     page.reload();page.wait_for_function("document.getElementById('note-0')?.value==='k'")

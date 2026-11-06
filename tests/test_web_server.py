@@ -54,11 +54,25 @@ class WebServerTests(unittest.TestCase):
         (job/'prepared.json').write_text(json.dumps(dict(labels=['き'],revision='new-revision')))
         for revision in [None,'old-revision']:
             payload=json.dumps(dict(labels=['み'],confirmed=True,prepared_revision=revision)).encode()
-            for action in ['render','align']:
+            for action in ['render','align','segments']:
                 with self.assertRaises(HTTPError) as error:
                     urlopen(Request(self.base+'/api/jobs/'+job.name+'/'+action,payload,{'X-UtaWeave':'local'}))
                 self.assertIn('版本过期',error.exception.read().decode())
         self.assertFalse((job/'process.json').exists())
+
+    def test_midi_segment_preview_is_readonly_and_needs_no_runtime(self):
+        job=self.root/'jobs'/('f'*32);job.mkdir()
+        prepared=dict(mode='midi',notes=[dict(start=1+i,end=1.5+i,pitch=60) for i in range(6)],
+                      labels=['ア']*6,bpm=120,revision='current')
+        raw=json.dumps(prepared);(job/'prepared.json').write_text(raw)
+        payload=json.dumps(dict(labels=prepared['labels'],prepared_revision='current')).encode()
+        with urlopen(Request(self.base+'/api/jobs/'+job.name+'/segments',payload,{'X-UtaWeave':'local'})) as r:
+            result=json.load(r)
+        self.assertEqual(result['chunk_count'],1)
+        self.assertEqual(result['chunks'][0]['midi_note_indices'],list(range(6)))
+        self.assertLessEqual(result['longest_condition_seconds'],8.)
+        self.assertEqual(list(job.iterdir()),[job/'prepared.json'])
+        self.assertEqual((job/'prepared.json').read_text(),raw)
 
     def test_worker_surfaces_current_stage_error_and_ignores_stale_runs(self):
         job=self.root/'jobs'/('c'*32);job.mkdir()

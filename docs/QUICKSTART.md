@@ -113,7 +113,7 @@ utaweave render --config configs/render.local.json --out runs/render \
   --python .venv-render/bin/python
 ```
 
-执行短唱句规划 → 原生停止生成 → TiFA 对齐 → 对异常段额外采样两个候选 → 固定规则选取 → Seed-VC 换声 → 再次 TiFA 对齐 → 有限变速、衔接和混音。最多 14.5 秒的歌词内容；无法完整覆盖且安全切开时会报错，不强制超长整曲生成。
+执行短唱句规划 → 原生停止生成 → TiFA 对齐 → 对异常段额外采样两个候选 → 固定规则选取 → Seed-VC 换声 → 再次 TiFA 对齐 → 有限变速、衔接和混音。原曲音频入口每片最多 14.5 秒歌词内容；MIDI 入口直接按音符与歌词句界规划，整句优先，演唱跨度与含留白的模型条件均不超过 8 秒，详见[工作台说明](WEB_UI.md)。无法完整覆盖且安全切开时会报错，不强制超长整曲生成。
 
 最终位置由 `runs/render/latest.json` 的 `final_manifest` 指定，对应目录内有：
 

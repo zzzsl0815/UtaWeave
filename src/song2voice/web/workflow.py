@@ -198,6 +198,18 @@ def require_score_revision(prepared,request):
         raise ValueError('乐谱已重新准备，当前页面的草稿版本过期。请刷新页面并核对新草稿后再提交。')
 
 
+def preview_midi_segments(prepared, labels):
+    """Timing-only preview. Placeholder phones never leave this CPU calculation."""
+    from ..rendering.generate import plan
+    from ..rendering.midi_plan import summary
+    if prepared['mode']!='midi':raise ValueError('只有 MIDI 入口支持此切分预览')
+    if not isinstance(labels,list) or len(labels)!=len(prepared['notes']) or any(not isinstance(x,str) or not x.strip() or len(x)>64 for x in labels):
+        raise ValueError('请先补齐音符读音，再预览切分')
+    score,_=notes_to_score(prepared['notes'],labels,{label:['a'] for label in labels},prepared['bpm'],
+                          phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
+    return dict(summary(plan(score)),prepared_revision=prepared['revision'])
+
+
 def realign(cfg,job,request):
     from ..lyric_alignment import align_lrc,build_alignment
     prepared=read(job/'prepared.json');require_score_revision(prepared,request)
@@ -275,7 +287,8 @@ def render(cfg,job,request):
     phones=g2p(cfg,job,readings=wanted) if wanted else {}
     runtime=template(cfg)
     if prepared['mode']=='midi':
-        score,offset=notes_to_score(prepared['notes'],labels,phones,prepared['bpm'])
+        score,offset=notes_to_score(prepared['notes'],labels,phones,prepared['bpm'],
+                                    phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
         stems=midi_stems(cfg,job,prepared['notes'],offset,original)
         runtime['source_mode']='midi'
         export_lyric_midi(asset(cfg,original['midi_asset']),prepared['track'],prepared['notes'],labels,job/'lyrics.mid')
@@ -286,7 +299,10 @@ def render(cfg,job,request):
     split=plan(score,whole_lines=True,stems=stems)
     for chunk in split['chunks']:compiled_duration(compile_chunk_annotation(chunk,score[0]['bpm']))
     atomic_json(job/'score.vr.json',score)
-    atomic_json(job/'score-check.json',dict(chunks=split['chunk_count'],lyric_units=split['lyric_unit_count']))
+    atomic_json(job/'score-check.json',dict(chunks=split['chunk_count'],lyric_units=split['lyric_unit_count'],
+        planner=split.get('planner','audio_pauses'),max_content_seconds=split['max_content_seconds'],
+        longest_content_seconds=max(c['content_seconds'] for c in split['chunks']),
+        longest_condition_seconds=max(compiled_duration(compile_chunk_annotation(c,score[0]['bpm'])) for c in split['chunks'])))
     stage(job,'reference','准备目标音色参考')
     ref=request['reference'];mode=ref['mode']
     if mode=='same_song':

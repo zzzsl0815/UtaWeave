@@ -169,6 +169,7 @@ window.addEventListener('resize',()=>drawRoll());
 function showPrepared(data, saved, draft=null) {
   readingEditors=[];
   prepared=data;labels=[...(draft?.labels||(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels))];setMode(data.mode);
+  $('segment-panel').hidden=data.mode!=='midi';$('segment-result').hidden=true;
   if(draft){readingInputMode=draft.reading_mode;phraseJob=current;phraseDrafts=new Map(draft.phrase_drafts);}
   $('reading-input-mode').value=readingInputMode;readingInputHelp();
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
@@ -212,6 +213,19 @@ function showPrepared(data, saved, draft=null) {
 }
 $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('input-panel').scrollIntoView({behavior:'smooth'});});
 $('export-midi').onclick=()=>action(async()=>{requireNoteReadings();saveEditorDraft();const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();if(phraseDrafts.size)notice(`已按当前逐音符歌词导出。${phraseDrafts.size} 句整句读音草稿尚未应用，不影响已手动调整的音符。`);},$('export-midi'));
+$('preview-segments').onclick=()=>action(async()=>{
+  requireNoteReadings();saveEditorDraft();
+  const job=current,revision=prepared.revision,input=JSON.stringify(labels);
+  const data=await api(`/api/jobs/${job}/segments`,{labels,prepared_revision:revision});
+  if(current!==job||prepared.revision!==revision||JSON.stringify(labels)!==input)throw Error('读音或乐谱已变化，请重新预览切分。');
+  $('segment-result').hidden=false;$('segment-rows').replaceChildren();
+  $('segment-summary').textContent=`${data.chunk_count} 段 · 最长演唱跨度 ${data.longest_content_seconds.toFixed(2)} 秒 · 含首尾留白的模型条件最长 ${data.longest_condition_seconds.toFixed(2)} 秒 · ${data.short_chunk_ids.length} 段不足 2 秒`;
+  for(const c of data.chunks){
+    const row=element('tr');for(const text of [Number(c.id.slice(6))+1,`${format(c.content_start)}–${format(c.content_end)}`,c.content_seconds.toFixed(2)+' s',c.estimated_duration.toFixed(2)+' s',c.lyric_phrase_ids.map(i=>i+1).join('、')||'按音符停顿'])row.append(element('td',text));
+    const reading=element('td',c.kana),romaji=element('span',undefined,'romaji-text');showRomaji(romaji,c.kana);reading.append(romaji);row.append(reading);$('segment-rows').append(row);
+  }
+  if(phraseDrafts.size)notice('预览使用已应用的分句范围和当前逐音符歌词；尚未应用的整句草稿未参与本次切分。');
+},$('preview-segments'));
 $('render').addEventListener('click',()=>action(async()=>{
   requireNoteReadings();
   if(phraseDrafts.size){focusPendingPhrase();throw Error('有整句读音草稿尚未应用，请检查标记的句子。备份状态见“保存草稿”区域；应用本句会保留手动修改的音符。');}
@@ -375,7 +389,7 @@ function captureDraft(){
     open_phrases:[...document.querySelectorAll('#phrase-list details[open]')].map(n=>Number(n.id.slice(7)))};
 }
 function hasEditorChanges(){return phraseDrafts.size||labels.some((x,i)=>x!==prepared.labels[i])||readingEditors.some(e=>e.error);}
-function saveEditorDraft(){if(restoringDraft)return;return draftStore.save();}
+function saveEditorDraft(){if(restoringDraft)return;$('segment-result').hidden=true;return draftStore.save();}
 function updateDraftMarkers(){
   $('draft-pending').textContent=phraseDrafts.size?`${phraseDrafts.size} 句整句读音待应用；逐音符修改直接保存，无需重新分配。`:'逐音符修改自动保存，无需重新分配。';
   $('draft-jump').hidden=!phraseDrafts.size;

@@ -44,7 +44,7 @@ def progress(out, status, **kw):
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
-def plan(score, maximum=14.5, whole_lines=False, stems=None):
+def plan(score, maximum=14.5, whole_lines=False, stems=None, source_mode=None):
     words = []
     for row in score:
         cursor = row['source_window']['start_seconds']
@@ -59,8 +59,13 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None):
             words.append(dict(word=word, start=start, end=end, line_index=row['line_index'],
                 word_index=i, pitch=[row['pitch'][j] for j in notes],
                 note=[row['note'][j] for j in notes], pitch_dur=[row['pitch_dur'][j] for j in notes],
-                phones=phones))
+                phones=phones,phrase_id=row.get('phrase_id'),
+                midi_note_indices=[row['note_indices'][j] for j in notes if row['note_indices'][j] is not None] if 'note_indices' in row else []))
     assert all(a['end'] <= b['start']+.001 for a, b in zip(words, words[1:]))
+    if source_mode=='midi' or all(row.get('source_mode')=='midi' for row in score):
+        from .midi_plan import plan_midi
+        seconds=sf.info(stems/'vocal_native.wav').duration if stems is not None else None
+        return plan_midi(score,words,maximum=min(8.,maximum),source_seconds=seconds)
     audio, sr = sf.read(stems/'vocal_native.wav', dtype='float32', always_2d=True)
     mono = audio.mean(1); hop = round(.01*sr); count = len(mono)//hop
     rms = np.sqrt(np.mean(mono[:count*hop].reshape(count, hop)**2, axis=1))
@@ -152,7 +157,7 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     preflight=[dict(item_name=e.get('item_name'),**check_conditioning(e)) for e in score]
     write(out/'score_preflight.json',preflight)
     require_conditioning(score)
-    split = plan(score, whole_lines=whole_lines,stems=stems)
+    split = plan(score, whole_lines=whole_lines,stems=stems,source_mode=runtime().get('source_mode'))
     split['whole_lyric_lines']=whole_lines
     for chunk in split['chunks']:
         chunk['annotation']=compile_chunk_annotation(chunk,score[0]['bpm'])
@@ -163,7 +168,8 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
         stems={name:sha(stems/name) for name in ['vocal_native.wav','instrumental.wav']},
         batch_size=batch_size,whole_lines=whole_lines,seed_base=runtime().get('seed',20261020),
         runtime=runtime(),base_model_sha256=sha(Path(runtime()['base_model'])/'model.safetensors'),
-        renderer_sha256=sha(Path(__file__)),conditioning_code_sha256=sha(Path(__file__).resolve().parents[1]/'conditioning.py'))
+        renderer_sha256=sha(Path(__file__)),conditioning_code_sha256=sha(Path(__file__).resolve().parents[1]/'conditioning.py'),
+        midi_planner_sha256=sha(Path(__file__).with_name('midi_plan.py')))
     if (out/'recipe.json').exists() and read(out/'recipe.json')!=recipe:
         raise ValueError('Input, settings or code changed; use a new render directory')
     write(out/'recipe.json',recipe);recipe_sha=sha(out/'recipe.json')

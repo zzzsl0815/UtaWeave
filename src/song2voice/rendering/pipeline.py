@@ -48,7 +48,7 @@ def guide_recipe(config, recipe):
     guide_config['reference_run'] = guide_config.pop('guide_reference_run')
     dependencies = ('rendering/generate.py', 'rendering/runtime.py', 'rendering/audio.py',
                     'rendering/align.py', 'rendering/retry.py', 'rendering/select.py',
-                    'conditioning.py', 'selection.py')
+                    'conditioning.py', 'selection.py', 'rendering/midi_plan.py')
     identity = dict(config=guide_config, assets={k:v for k,v in recipe.items()
         if k.endswith('sha256') and k not in ('code_sha256', 'reference_sha256')},
         code={k:recipe['code_sha256'][k] for k in dependencies})

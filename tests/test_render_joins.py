@@ -48,5 +48,14 @@ class JoinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'No phone-safe join'):
             protect_join(self.clip('left',0.,2.4,.2,2.2),self.clip('right',2.,4.,2.1,3.8))
 
+    def test_midi_lyric_boundary_uses_only_the_available_short_gap(self):
+        left=self.clip('left',0.,2.4,.2,2.0)
+        right=self.clip('right',1.8,4.,2.01,3.8)
+        audit=protect_join(left,right,allow_tight=True)
+        self.assertLess(audit['fade_seconds'],.002)
+        self.assert_body_untouched(left);self.assert_body_untouched(right)
+        with self.assertRaisesRegex(ValueError,'No phone-safe join'):
+            protect_join(self.clip('left',0.,2.4,.2,2.2),self.clip('right',2.,4.,2.1,3.8),allow_tight=True)
+
 
 if __name__=='__main__':unittest.main()

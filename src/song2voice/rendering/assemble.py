@@ -1,5 +1,6 @@
 """Assemble native EOS audio with bounded tempo correction and protected joins."""
 import argparse
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,7 @@ def fit_timeline(wave, start, first_phone, last_phone, samples):
         policy='Only non-lyric samples outside the source clock are removed')
 
 
-def protect_join(left, right):
+def protect_join(left, right, allow_tight=False):
     """Join outside both lyric bodies, even when one phrase has no preroll."""
     left_end=left['start']+len(left['wave']);right_start=right['start']
     if left_end<=right_start:
@@ -36,22 +37,30 @@ def protect_join(left, right):
             generated_quiet_gap_seconds=(right_start-left_end)/SR,removed_energy_fraction=0.)
     safe_lo=round((left['last']+.025)*SR)
     safe_hi=round((right['first']-.025)*SR)
-    if safe_hi-safe_lo<round(.012*SR):
+    minimum=round(.012*SR)
+    if allow_tight and safe_hi-safe_lo<minimum:
+        # LRC boundaries in MIDI can have only a few milliseconds of note-off
+        # space. Fit a shorter fade entirely inside that gap; never crop phones.
+        end=math.ceil(left['last']*SR);start=math.floor(right['first']*SR)
+        if start-end<round(.004*SR):raise ValueError(f"No phone-safe join between {left['id']} and {right['id']}")
+        guard=min(round(.025*SR),(start-end)//4)
+        safe_lo=end+guard;safe_hi=start-guard;minimum=4
+    if safe_hi-safe_lo<minimum:
         raise ValueError(f"No phone-safe join between {left['id']} and {right['id']}")
     lo=max(right_start,safe_lo);hi=min(left_end,safe_hi)
-    shared=hi-lo>=round(.012*SR)
+    shared=hi-lo>=minimum
     if not shared:
         # A phrase can begin exactly at its first phone. There is then no
         # shared non-lyric overlap, but the preceding phrase's tail can still
         # fade inside the lyric gap, without touching the incoming phone.
         lo,hi=safe_lo,safe_hi
-    candidates=np.arange(lo+240,hi-240,240,dtype=int)
+    fade=min(240,(hi-lo)//4)
+    candidates=np.arange(lo+fade,hi-fade,max(1,fade),dtype=int)
     if not len(candidates):candidates=np.array([(lo+hi)//2])
     def energy(clip,t):
         a=max(0,t-clip['start']-240);b=min(len(clip['wave']),t-clip['start']+240)
         return float(np.mean(clip['wave'][a:b]**2)) if a<b else 0.
     cut=int(min(candidates,key=lambda t:energy(left,t)+energy(right,t)))
-    fade=min(240,(hi-lo)//4)
     for clip,outgoing in [(left,True),(right,False)]:
         a=int(np.clip(cut-fade-clip['start'],0,len(clip['wave'])))
         b=int(np.clip(cut+fade-clip['start'],0,len(clip['wave'])))
@@ -107,7 +116,7 @@ def main(out):
         clip.update(wave=wave,weights=np.ones(len(wave),dtype='float32'),start=start,first=first,last=last)
     joins=[]
     for left,right in zip(prepared,prepared[1:]):
-        joins.append(protect_join(left,right))
+        joins.append(protect_join(left,right,allow_tight=manifest['plan'].get('source_mode')=='midi'))
     track=np.zeros(len(inst),dtype='float32');edge_audits=[]
     for clip in prepared:
         wave=clip['wave'];weights=clip['weights']

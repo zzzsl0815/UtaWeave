@@ -18,7 +18,7 @@ from ..report_server import ReportHandler
 from ..selection import atomic_json
 from ..midi_score import inspect_midi, require_edited_mapping
 from ..netease import fetch_lyrics, song_id_from_url
-from .workflow import read, load_config, asset, export_lyric_midi, require_score_revision
+from .workflow import read, load_config, asset, export_lyric_midi, require_score_revision, preview_midi_segments
 from .drafts import save_draft, list_drafts
 
 LOCK=threading.Lock()
@@ -184,7 +184,7 @@ class Handler(ReportHandler):
                     job=self.workspace/'jobs'/uuid.uuid4().hex;job.mkdir()
                     atomic_json(job/'request.json',request);launch(self.config,job,'prepare')
                     self.send_json(dict(id=job.name));return
-                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi|align|draft)',path)
+                match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/(render|cancel|retry|midi|align|draft|segments)',path)
                 if not match:raise ValueError('Unknown action')
                 job=self.workspace/'jobs'/identifier(match[1]);action=match[2]
                 if action=='cancel':
@@ -199,6 +199,8 @@ class Handler(ReportHandler):
                     # Old tabs keep their own branch even after score realignment.
                     self.send_json(save_draft(job,request));return
                 prepared=read(job/'prepared.json');require_score_revision(prepared,request)
+                if action=='segments':
+                    self.send_json(preview_midi_segments(prepared,request.get('labels')));return
                 if action=='align':
                     if alive(job):raise ValueError('任务正在执行，请等待或先停止')
                     if prepared.get('mode')!='midi' or not prepared.get('alignment'):raise ValueError('当前乐谱没有 LRC 分句，请使用带时间戳的歌词重新准备')
