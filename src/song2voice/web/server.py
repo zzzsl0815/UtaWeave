@@ -170,12 +170,18 @@ class Handler(ReportHandler):
                 if path=='/api/lyrics':self.send_json(fetch_lyrics(request['url']));return
                 if path=='/api/jobs':
                     from ..language import song_language
+                    from ..midi_score import embedded_midi_lyrics
                     request['language']=song_language(request)
                     mode=request.get('mode')
                     if mode not in ('midi','song'):raise ValueError('请选择 MIDI 或原曲入口')
                     if mode=='midi':
                         info=inspect_midi(asset(self.config,request['midi_asset']))
                         if type(request.get('track')) is not int:raise ValueError('请选择旋律音轨')
+                        if request.get('lyric_source','text') not in ('text','embedded'):raise ValueError('未知的 MIDI 歌词来源')
+                        if request.get('lyric_source')=='embedded':
+                            if request.get('lyric_track') is not None and type(request['lyric_track']) is not int:raise ValueError('请选择歌词音轨')
+                            if request.get('lyrics_text') or request.get('lyrics_url'):raise ValueError('带歌词 MIDI 入口直接使用文件内歌词，不接受外部歌词覆盖')
+                            embedded_midi_lyrics(info,request['track'],request.get('lyric_track'))
                         if request.get('accompaniment_asset'):asset(self.config,request['accompaniment_asset'])
                     elif request.get('source_url'):song_id_from_url(request['source_url'])
                     else:asset(self.config,request['source_asset'])
@@ -218,7 +224,8 @@ class Handler(ReportHandler):
                     if prepared['mode']!='midi':raise ValueError('只有 MIDI 输入可导出内嵌歌词的 MIDI')
                     export_lyric_midi(asset(self.config,original['midi_asset']),prepared['track'],prepared['notes'],labels,job/'lyrics.mid')
                     self.send_json(dict(url=f'/files/{job.name}/lyrics.mid'));return
-                if request.get('confirmed') is not True:raise ValueError('请先核对歌词对应')
+                from ..midi_score import require_render_confirmation
+                require_render_confirmation(prepared,request)
                 require_edited_mapping(read(job/'prepared.json'),labels)
                 if type(request.get('steps')) is not int or not 10<=request['steps']<=100:raise ValueError('采样步数范围为 10–100')
                 if type(request.get('cfg')) not in (int,float) or not math.isfinite(request['cfg']) or not 0<=request['cfg']<=3:raise ValueError('CFG 范围为 0–3')

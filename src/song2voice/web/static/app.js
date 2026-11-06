@@ -8,8 +8,8 @@ let restoringDraft=false, draftChoices=[], pollSerial=0, draftLoadSerial=0, defe
 const draftStore=new EditorDraftStore({capture:captureDraft,report:(job,text,unsafe)=>{
   if(job===current){$('draft-status').textContent=text;$('draft-status').classList.toggle('reading-error',unsafe);}
 }});
-const stageNames = {queued:'排队中',input:'读取输入',lyrics:'转换读音',separate:'分离人声',annotate:'自动转谱',review:'等待核对乐谱',score:'检查乐谱',reference:'准备音色参考',render:'生成演唱',complete:'生成完成',error:'任务失败',stopped:'任务已停止'};
-const statusNames = {queued:'排队中',running:'进行中',awaiting_score:'待核对',complete:'已完成',failed:'失败',cancelled:'已停止'};
+const stageNames = {queued:'排队中',input:'读取输入',lyrics:'转换读音',separate:'分离人声',annotate:'自动转谱',review:'等待核对乐谱',voice:'选择音色参考',score:'检查乐谱',reference:'准备音色参考',render:'生成演唱',complete:'生成完成',error:'任务失败',stopped:'任务已停止'};
+const statusNames = {queued:'排队中',running:'进行中',awaiting_score:'待核对',awaiting_voice:'待选音色',complete:'已完成',failed:'失败',cancelled:'已停止'};
 function notice(message) {
   $('notice').textContent=message||'';$('notice').hidden=!message;
   if(message){const close=document.createElement('button');close.textContent='×';close.className='notice-close';close.setAttribute('aria-label','关闭提示');close.onclick=()=>notice('');$('notice').append(close);}
@@ -31,9 +31,13 @@ async function action(fn, button) {
 function setMode(value) {
   mode = value;
   document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed',String(b.dataset.mode === mode)));
-  $('song-input').hidden = mode !== 'song'; $('midi-input').hidden = mode !== 'midi';
+  $('song-input').hidden = mode !== 'song'; $('midi-input').hidden = mode === 'song';
+  $('embedded-input').hidden=mode!=='midi_lyrics';$('lyrics-section').hidden=mode==='midi_lyrics';
+  $('prepare').textContent=mode==='midi_lyrics'?'读取 MIDI，选择音色 →':'准备乐谱 →';
+  document.querySelector('[data-step="2"]').innerHTML=mode==='midi_lyrics'?'<b>02</b> 读取歌词':'<b>02</b> 核对乐谱';
+  $('task-stages').children[1].textContent=mode==='midi_lyrics'?'读取内嵌歌词':'核对乐谱与歌词';
   const same = $('reference-mode').querySelector('[value="same_song"]'); same.hidden = mode !== 'song';
-  if (mode === 'midi' && $('reference-mode').value === 'same_song') $('reference-mode').value = 'netease';
+  if (mode !== 'song' && $('reference-mode').value === 'same_song') $('reference-mode').value = 'netease';
   updateReference();
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click',() => setMode(b.dataset.mode)));
@@ -47,9 +51,11 @@ for (const key of ['source','midi','accompaniment','reference']) {
     if (key === 'source') $('source-url').value = '';
     if (key === 'midi') {
       $('midi-track').replaceChildren();
+      $('midi-lyric-track').replaceChildren(new Option('自动选择（旋律轨优先）',''));
+      (data.midi.lyric_tracks||[]).forEach(track=>$('midi-lyric-track').append(new Option(`${track.name} · ${track.events.filter(e=>e.text.trim()).length} 条歌词`,track.index)));
       data.midi.tracks.forEach(track => {
         const option = document.createElement('option'); option.value = track.index;
-        option.textContent = `${track.name} · ${track.count} 个音符 · ${track.seconds.toFixed(1)} 秒${track.polyphonic?' · 存在复音，不能作为旋律轨':''}`;
+        option.textContent = `${track.name} · ${track.count} 个音符 · ${track.notes.filter(n=>n.lyric).length} 条同轨歌词 · ${track.seconds.toFixed(1)} 秒${track.polyphonic?' · 存在复音，不能作为旋律轨':''}`;
         option.disabled = track.polyphonic; $('midi-track').append(option);
       });
       const first = data.midi.tracks.find(t => !t.polyphonic); if (first) $('midi-track').value = first.index;
@@ -67,15 +73,17 @@ $('fetch-lyrics').addEventListener('click',() => action(async () => {
 },$('fetch-lyrics')));
 $('prepare').addEventListener('click',() => action(async () => {
   saveEditorDraft();
-  const request = {mode,language:$('chinese-mode').checked?'zh':'ja',lyrics_text:$('lyrics-text').value,lyrics_url:$('lyrics-url').value.trim(),bpm:Number($('bpm').value)};
-  if (mode === 'midi') {
+  const request = {mode:mode==='midi_lyrics'?'midi':mode,language:$('chinese-mode').checked?'zh':'ja',lyrics_text:$('lyrics-text').value,lyrics_url:$('lyrics-url').value.trim(),bpm:Number($('bpm').value)};
+  if (mode !== 'song') {
     if (!uploads.midi) throw Error('请先上传 MIDI。');
+    if(mode==='midi_lyrics')Object.assign(request,{lyric_source:'embedded',lyric_track:$('midi-lyric-track').value===''?null:Number($('midi-lyric-track').value),lyrics_text:'',lyrics_url:''});
     Object.assign(request,{midi_asset:uploads.midi,track:Number($('midi-track').value),accompaniment_asset:uploads.accompaniment || null});
   } else {
     request.source_url = $('source-url').value.trim(); request.source_asset = uploads.source;
     if (!request.source_url && !request.source_asset) throw Error('请输入原曲链接或上传音频。');
   }
   const job = await api('/api/jobs',request); current = job.id; loadedJob = null; prepared = null;
+  for(const id of ['review-panel','embedded-panel','voice-panel','result-panel'])$(id).hidden=true;
   location.hash = `job=${current}`; await poll();
 },$('prepare')));
 function updateReference() {
@@ -88,6 +96,7 @@ $('reference-mode').addEventListener('change',updateReference);
 function format(seconds) { return `${Math.floor(seconds/60)}:${(seconds%60).toFixed(2).padStart(5,'0')}`; }
 function pitchName(p) { return p ? ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'][p%12] + (Math.floor(p/12)-1) : '未知'; }
 const isChinese=()=>prepared?.language==='zh';
+const isEmbedded=()=>prepared?.mode==='midi'&&prepared?.lyric_source==='embedded'&&prepared?.review_required===false;
 function showRomaji(node,reading,needsReadingHint='含汉字时，请应用本句以更新读音') {
   node.hidden=isChinese();if(node.hidden){node.textContent='';return;}
   const result=romanizeReading(reading);
@@ -170,19 +179,27 @@ $('piano-roll').addEventListener('click',e => {
 window.addEventListener('resize',()=>drawRoll());
 function showPrepared(data, saved, draft=null) {
   readingEditors=[];
-  prepared=data;labels=[...(draft?.labels||(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels))];setMode(data.mode);
+  prepared=data;labels=[...(draft?.labels||(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels))];setMode(isEmbedded()?'midi_lyrics':data.mode);
+  if(isEmbedded()){labels=[...data.labels];phraseDrafts.clear();}
+  $('embedded-panel').hidden=!isEmbedded();
   $('segment-panel').hidden=data.mode!=='midi';$('segment-result').hidden=true;
   $('connect-short-rests').checked=draft?(draft.fields?.['connect-short-rests']??$('connect-short-rests').checked):Boolean(saved?.connect_short_rests);
   if(draft){readingInputMode=draft.reading_mode;phraseJob=current;phraseDrafts=new Map(draft.phrase_drafts);}
-  if(isChinese())readingInputMode='native';
+  if(isChinese()||isEmbedded())readingInputMode='native';
   $('chinese-mode').checked=isChinese();$('reading-mode-panel').hidden=isChinese();$('romaji-help').hidden=isChinese();
   $('reading-input-mode').value=readingInputMode;readingInputHelp();
-  $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
+  $('input-panel').hidden=true;$('review-panel').hidden=isEmbedded();$('voice-panel').hidden=false;
   $('score-summary').replaceChildren();
   for (const text of [isChinese()?'中文 · 原版 VR（无 LoRA）':'日语 · VR + 日语 LoRA',`${data.notes.length} 个${data.mode==='midi'?'音符':'歌词单元'}`,`${data.bpm.toFixed(1)} BPM`,`${data.notes.at(-1).end.toFixed(1)} 秒`]) {
     const span=document.createElement('span');span.textContent=text;$('score-summary').append(span);
   }
   $('score-warning').textContent=data.warnings.join(' ');
+  if(isEmbedded()){
+    $('embedded-summary').replaceChildren(...[...$('score-summary').children].map(n=>n.cloneNode(true)));
+    $('embedded-summary').append(element('span',`${data.segment_preview?.chunk_count||0} 段 · 每段不超过 8 秒`));
+    $('embedded-warning').textContent=data.warnings.join(' ');
+    $('embedded-lyrics').textContent=data.lyrics.original;
+  }
   $('original-lyrics').textContent=data.lyrics.original || '没有独立歌词原文';$('auto-reading').textContent=data.reading?.reading || '';
   showRomaji($('auto-romaji'),data.reading?.reading || '');$('auto-romaji').hidden=isChinese()||!data.reading?.reading;
   $('mapping-hint').textContent=isChinese()?(data.mode==='midi'?'直接填写汉字或英文单词；一个音符可填多个字。同一字跨连续音符时，后续填 -；不演唱填 SP。多音字仍需试听核对。':'直接修正汉字或英文歌词；保留原有音符及时间。'):data.mode==='midi'?'每行对应一个音符，填写日语假名或英文单词。一个音符可填写多个拍音；同一字跨多个连续音符时，后续音符填 -。不演唱的音符填 SP。MIDI 中的原有休止自动保留。':'每行对应自动标注的一个歌词单元，可修改假名读音。此处保持音符及时间不变；如需修改旋律，可使用 MIDI 入口。';
@@ -214,8 +231,10 @@ function showPrepared(data, saved, draft=null) {
     for(const id of draft.open_phrases||[]){const row=$(`phrase-${id}`);if(row){row.open=true;row.hidden=false;}}
     $('confirmed').checked=false;
   }
+  if(isEmbedded()){phraseDrafts.clear();labels=[...data.labels];}
   updateDraftMarkers();
 }
+$('embedded-new-input').onclick=()=>$('new-input').click();
 $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('input-panel').scrollIntoView({behavior:'smooth'});});
 $('export-midi').onclick=()=>action(async()=>{requireNoteReadings();saveEditorDraft();const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();if(phraseDrafts.size)notice(`已按当前逐音符歌词导出。${phraseDrafts.size} 句整句读音草稿尚未应用，不影响已手动调整的音符。`);},$('export-midi'));
 $('preview-segments').onclick=()=>action(async()=>{
@@ -232,16 +251,16 @@ $('preview-segments').onclick=()=>action(async()=>{
   if(phraseDrafts.size)notice('预览使用已应用的分句范围和当前逐音符歌词；尚未应用的整句草稿未参与本次切分。');
 },$('preview-segments'));
 $('render').addEventListener('click',()=>action(async()=>{
-  requireNoteReadings();
+  if(!isEmbedded())requireNoteReadings();
   if(phraseDrafts.size){focusPendingPhrase();throw Error('有整句读音草稿尚未应用，请检查标记的句子。备份状态见“保存草稿”区域；应用本句会保留手动修改的音符。');}
-  if(!$('confirmed').checked)throw Error('请核对歌词和音符对应，并勾选确认。');
+  if(!isEmbedded()&&!$('confirmed').checked)throw Error('请核对歌词和音符对应，并勾选确认。');
   if(labels.some(x=>!x.trim()))throw Error('请补齐空白音符；延音填 -，不演唱的音符填 SP。');
   if(prepared.alignment?.unassigned_units>0)throw Error('仍有整句读音未分配，请先按句修正并重新分配。');
   if(prepared.unmatched_moras>0&&labels.every((x,i)=>x===prepared.labels[i]))throw Error(`还有 ${prepared.unmatched_moras} 个拍音未分配，请先修改歌词与音符对应，再生成。`);
   const reference={mode:$('reference-mode').value,asset:uploads.reference,url:$('reference-url').value.trim()};
   if(['clip','audio'].includes(reference.mode)&&!reference.asset)throw Error('请上传音色参考。');
   if(reference.mode==='netease'&&!reference.url)throw Error('请填写目标音色歌曲链接。');
-  await api(`/api/jobs/${current}/render`,{labels,prepared_revision:prepared.revision,confirmed:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value),connect_short_rests:prepared.mode==='midi'&&$('connect-short-rests').checked});
+  await api(`/api/jobs/${current}/render`,{labels,prepared_revision:prepared.revision,confirmed:isEmbedded()?false:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value),connect_short_rests:prepared.mode==='midi'&&$('connect-short-rests').checked});
   $('result-panel').hidden=true;await poll();
 },$('render')));
 function updateTask(state) {
@@ -255,9 +274,9 @@ function updateTask(state) {
   $('view-log').hidden=false;$('prepare').disabled=busy;$('render').disabled=busy;
   document.querySelectorAll('[data-align],#phrase-list input,#phrase-list textarea,#note-rows input,#reading-input-mode').forEach(e=>e.disabled=busy);
   if(state.status!=='complete')$('result-panel').hidden=true;
-  const step=state.status==='complete'?4:['reference','render'].includes(state.stage)?3:prepared?2:1;
+  const step=state.status==='complete'?4:['voice','reference','render'].includes(state.stage)?3:prepared?2:1;
   document.querySelectorAll('[data-step]').forEach(e=>e.classList.toggle('active',Number(e.dataset.step)===step));
-  const index=state.status==='complete'?5:state.stage==='render'?3:state.stage==='reference'?2:prepared?1:0;
+  const index=state.status==='complete'?5:state.stage==='render'?3:['voice','reference'].includes(state.stage)?2:prepared?1:0;
   [...$('task-stages').children].forEach((li,i)=>{li.className=i<index?'done':i===index?'current':'';});
   $('progress-track').firstElementChild.style.width=`${(index+.3)/5.3*100}%`;
   if(state.status==='failed')notice(state.error || state.message);
@@ -304,7 +323,7 @@ async function poll() {
 async function history(){
   try{const jobs=await api('/api/jobs');$('history-list').replaceChildren();
     if(!jobs.length){$('history-list').textContent='还没有任务';return;}
-    jobs.forEach(job=>{const button=document.createElement('button'),small=document.createElement('small');button.textContent=`${statusNames[job.status]||job.status} · ${job.id.slice(0,8)}`;small.textContent=new Date(job.created_at*1000).toLocaleString();button.append(small);button.onclick=()=>{if(job.id===current)return;saveEditorDraft();current=job.id;loadedJob=null;prepared=null;phraseDrafts.clear();$('review-panel').hidden=true;$('voice-panel').hidden=true;$('result-panel').hidden=true;location.hash=`job=${current}`;poll();};$('history-list').append(button);});
+    jobs.forEach(job=>{const button=document.createElement('button'),small=document.createElement('small');button.textContent=`${statusNames[job.status]||job.status} · ${job.id.slice(0,8)}`;small.textContent=new Date(job.created_at*1000).toLocaleString();button.append(small);button.onclick=()=>{if(job.id===current)return;saveEditorDraft();current=job.id;loadedJob=null;prepared=null;phraseDrafts.clear();$('review-panel').hidden=true;$('embedded-panel').hidden=true;$('voice-panel').hidden=true;$('result-panel').hidden=true;location.hash=`job=${current}`;poll();};$('history-list').append(button);});
   }catch(_){};
 }
 $('cancel').onclick=()=>action(async()=>{await api(`/api/jobs/${current}/cancel`,{});await poll();},$('cancel'));
@@ -426,7 +445,7 @@ function restoreEditorDraft(source){
   }
   saveEditorDraft();restoringDraft=true;
   try{showPrepared(prepared,null,draft);}finally{restoringDraft=false;}
-  saveEditorDraft();notice('草稿已恢复，包括未完成的拼写和逐音符修改；没有执行重新分配。');
+  saveEditorDraft();if(!isEmbedded())notice('草稿已恢复，包括未完成的拼写和逐音符修改；没有执行重新分配。');
 }
 async function loadEditorDrafts(automatic=true){
   const job=current,serial=++draftLoadSerial,sequence=draftStore.sequence;

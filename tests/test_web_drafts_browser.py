@@ -118,3 +118,51 @@ class EditorDraftBrowserTests(unittest.TestCase):
                     self.assertEqual(page.locator('#reading-input-mode').input_value(),'native')
                     self.assertEqual(errors,[])
             finally:server.shutdown();server.server_close();thread.join()
+
+    def test_embedded_midi_goes_straight_to_reference_and_render(self):
+        import mido
+        from unittest.mock import patch
+        from song2voice.web.workflow import prepare
+        with tempfile.TemporaryDirectory() as tmp, sync_playwright() as pw:
+            executable=pw.chromium.executable_path
+            if not Path(executable).exists():self.skipTest('Playwright Chromium is not installed')
+            root=Path(tmp);(root/'uploads').mkdir();(root/'jobs').mkdir()
+            midi=mido.MidiFile(charset='utf-8');track=mido.MidiTrack();midi.tracks.append(track)
+            for char in '春风吹过':
+                track.extend([mido.MetaMessage('lyrics',text=char),mido.Message('note_on',note=60),mido.Message('note_off',note=60,time=480)])
+            midi.save(root/'lyrics.mid');renders=[]
+            def launch(cfg,job,action):
+                if action=='prepare':
+                    atomic_json(job/'status.json',dict(id=job.name,status='queued',stage='queued',message='test',created_at=time.time(),updated_at=time.time()))
+                    with patch('song2voice.web.workflow.g2p',return_value=[['zh/a']]*4):
+                        prepare(cfg,job,json.loads((job/'request.json').read_text()))
+                elif action=='render':renders.append(json.loads((job/'render-request.json').read_text()))
+                else:raise AssertionError(action)
+            server=ThreadingHTTPServer(('127.0.0.1',0),partial(Handler,config={'workspace':str(root)}))
+            thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+            try:
+                with patch('song2voice.web.server.launch',side_effect=launch),pw.chromium.launch(headless=True,executable_path=executable,args=['--no-sandbox']) as browser:
+                    page=browser.new_page();errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                    page.goto(f'http://127.0.0.1:{server.server_port}/')
+                    page.locator('#lyrics-text').fill('旧歌词不应覆盖内嵌歌词')
+                    page.locator('[data-mode=midi_lyrics]').click();page.locator('#chinese-mode').check()
+                    self.assertTrue(page.locator('#lyrics-section').is_hidden())
+                    with page.expect_response('**/api/upload?*'):
+                        page.locator('#midi-file').set_input_files(str(root/'lyrics.mid'))
+                    page.wait_for_function("document.getElementById('midi-file-info').textContent.includes('已上传')")
+                    page.locator('#prepare').click();page.locator('#embedded-panel').wait_for(state='visible')
+                    self.assertTrue(page.locator('#review-panel').is_hidden())
+                    self.assertTrue(page.locator('#confirmed').is_hidden())
+                    self.assertTrue(page.locator('#voice-panel').is_visible())
+                    self.assertIn('4 个音符',page.locator('#embedded-summary').inner_text())
+                    page.reload();page.locator('#embedded-panel').wait_for(state='visible')
+                    self.assertTrue(page.locator('#review-panel').is_hidden())
+                    page.locator('#reference-url').fill('https://music.163.com/song?id=12345')
+                    with page.expect_response('**/render') as response:page.locator('#render').click()
+                    self.assertTrue(response.value.ok)
+                    self.assertEqual(renders[0]['labels'],list('春风吹过'))
+                    self.assertFalse(renders[0]['confirmed'])
+                    request=json.loads(next((root/'jobs').glob('*/request.json')).read_text())
+                    self.assertEqual(request['lyric_source'],'embedded');self.assertEqual(request['lyrics_text'],'')
+                    self.assertEqual(errors,[])
+            finally:server.shutdown();server.server_close();thread.join()

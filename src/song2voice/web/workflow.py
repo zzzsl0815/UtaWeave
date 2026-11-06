@@ -13,6 +13,7 @@ import time
 
 from ..selection import atomic_json, require_reference
 from ..midi_score import inspect_midi, split_lyrics_text, notes_to_score, edit_score, require_edited_mapping
+from ..midi_score import embedded_midi_lyrics, embedded_score, require_render_confirmation, score_phrases
 from ..language import song_language
 
 
@@ -99,6 +100,10 @@ def prepare(cfg, job, request):
         source=asset(cfg,request['midi_asset']);info=inspect_midi(source)
         track=next((t for t in info['tracks'] if t['index']==request['track']),None)
         if track is None or track['polyphonic']:raise ValueError('请选择没有重叠音符的主旋律轨')
+        if request.get('lyric_source')=='embedded':
+            prepared=prepare_embedded_midi(cfg,job,request,info,track,language)
+            finish_preparation(job,prepared,language)
+            return
         lyric=lyrics(cfg,request)
         labels=[n.get('lyric','') for n in track['notes']]
         draft=dict(reading='',moras=[],warning='请逐音符核对歌词与读音。')
@@ -150,10 +155,45 @@ def prepare(cfg, job, request):
                 cursor+=duration
         prepared=dict(mode='song',notes=units,labels=[n['lyric'] for n in units],bpm=request['bpm'],lyrics=lyric,
                       warnings=['显示的是音频自动标注；网易云歌词仅供核对，没有直接替换自动标注。'],unmatched_moras=0)
+    finish_preparation(job,prepared,language)
+
+
+def prepare_embedded_midi(cfg,job,request,info,track,language):
+    from ..rendering.generate import plan
+    from ..rendering.midi_plan import summary
+    stage(job,'input','读取 MIDI 内嵌歌词与原有音符对应')
+    imported=embedded_midi_lyrics(info,track['index'],request.get('lyric_track'))
+    source_labels=imported['labels'];labels=list(source_labels)
+    if language=='ja':
+        ids=[i for i,s in enumerate(labels) if s not in ('-','SP','AP')]
+        readings=g2p(cfg,job,texts=[labels[i] for i in ids],language=language)['lines']
+        if len(readings)!=len(ids):raise ValueError('MIDI 歌词读音数量不一致')
+        for i,reading in zip(ids,readings):
+            if not reading['units']:raise ValueError(f'第 {i+1} 个音符没有可识别的歌词读音')
+            labels[i]=' '.join(u['text'] for u in reading['units'])
+            if len(labels[i])>64:raise ValueError(f'第 {i+1} 个音符转换后的读音过长，请拆分后导入')
+    phones=g2p(cfg,job,readings=labels,language=language,indexed=language=='zh')
+    score,_=notes_to_score(track['notes'],labels,phones,info['bpm'],phrases=imported['phrases'])
+    split=summary(plan(score))
+    warnings=[info['warning']] if info['warning'] else []
+    if abs(info['bpm']-info['render_bpm'])>.01:
+        warnings.append(f"MIDI 为 {info['bpm']:.2f} BPM；VR 使用 {info['render_bpm']} BPM，保留原始音符时间。")
+    return dict(mode='midi',lyric_source='embedded',review_required=False,
+        notes=track['notes'],labels=labels,bpm=info['bpm'],render_bpm=info['render_bpm'],track=track['index'],
+        lyrics=dict(original=' '.join(source_labels),origin='MIDI 内嵌歌词',text=' '.join(source_labels)),
+        reading=dict(reading=' '.join(labels)),warnings=warnings,alignment=None,unmatched_moras=0,
+        embedded_midi=dict(lyric_track=imported['lyric_track'],source_labels=source_labels,assignment=imported['assignment']),
+        embedded_phones=phones,midi_phrases=imported['phrases'],segment_preview=split)
+
+
+def finish_preparation(job,prepared,language):
     prepared['language']=language
     prepared['revision']=str(time.time_ns())
     atomic_json(job/'prepared.json',prepared)
-    state=read(job/'status.json');state.update(status='awaiting_score',stage='review',message='请核对音符、歌词读音与延音，再生成演唱',updated_at=time.time())
+    direct=embedded_score(prepared)
+    state=read(job/'status.json');state.update(status='awaiting_voice' if direct else 'awaiting_score',
+        stage='voice' if direct else 'review',
+        message='已读取 MIDI 内嵌歌词，选择音色参考即可生成' if direct else '请核对音符、歌词读音与延音，再生成演唱',updated_at=time.time())
     atomic_json(job/'status.json',state)
 
 
@@ -209,7 +249,7 @@ def preview_midi_segments(prepared, labels, connect_short_rests=False):
     if not isinstance(labels,list) or len(labels)!=len(prepared['notes']) or any(not isinstance(x,str) or not x.strip() or len(x)>64 for x in labels):
         raise ValueError('请先补齐音符读音，再预览切分')
     score,_=notes_to_score(prepared['notes'],labels,{label:['a'] for label in labels},prepared['bpm'],
-                          phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
+                          phrases=score_phrases(prepared))
     if type(connect_short_rests) is not bool:raise ValueError('短休止设置必须为布尔值')
     return dict(summary(plan(score,connect_short_rests=connect_short_rests)),prepared_revision=prepared['revision'])
 
@@ -285,11 +325,13 @@ def render(cfg,job,request):
     from ..conditioning import require_conditioning, compile_chunk_annotation, compiled_duration
     prepared=read(job/'prepared.json');labels=request['labels'];original=read(job/'request.json')
     require_score_revision(prepared,request)
+    require_render_confirmation(prepared,request)
     require_edited_mapping(prepared,labels)
     stage(job,'score','检查歌词与音符对应')
     wanted=labels if prepared['mode']=='midi' else [x for x,y in zip(labels,prepared['labels']) if x!=y]
     language=song_language(prepared)
-    phones=g2p(cfg,job,readings=wanted,language=language,indexed=language=='zh' and prepared['mode']=='midi') if wanted else {}
+    phones=prepared['embedded_phones'] if embedded_score(prepared) else (
+        g2p(cfg,job,readings=wanted,language=language,indexed=language=='zh' and prepared['mode']=='midi') if wanted else {})
     runtime=template(cfg)
     runtime.update(language=language,use_lora=language=='ja')
     if language=='zh':
@@ -298,7 +340,7 @@ def render(cfg,job,request):
         runtime.pop('expected_lora_tensors',None)
     if prepared['mode']=='midi':
         score,offset=notes_to_score(prepared['notes'],labels,phones,prepared['bpm'],
-                                    phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
+                                    phrases=score_phrases(prepared))
         stems=midi_stems(cfg,job,prepared['notes'],offset,original)
         runtime['source_mode']='midi'
         export_lyric_midi(asset(cfg,original['midi_asset']),prepared['track'],prepared['notes'],labels,job/'lyrics.mid')

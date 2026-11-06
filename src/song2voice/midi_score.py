@@ -32,12 +32,14 @@ def inspect_midi(path):
     def clock(tick):
         index = bisect_right(ticks, tick)-1
         return seconds[index]+mido.tick2second(tick-ticks[index], midi.ticks_per_beat, tempos[ticks[index]])
-    tracks = []
+    tracks = []; lyric_tracks = []
     for index, track in enumerate(midi.tracks):
-        tick, active, notes, lyrics = 0, {}, [], {}
+        tick, active, notes, lyrics, lyric_events = 0, {}, [], {}, []
         for event in track:
             tick += event.time
-            if event.type == 'lyrics': lyrics[tick] = event.text.strip()
+            if event.type == 'lyrics':
+                lyrics[tick] = event.text.strip()
+                lyric_events.append(dict(tick=tick,text=event.text))
             if event.type not in ('note_on', 'note_off') or event.channel == 9: continue
             key = (event.channel, event.note)
             if event.type == 'note_on' and event.velocity:
@@ -50,6 +52,8 @@ def inspect_midi(path):
                                   tick=start, end_tick=tick, channel=event.channel))
         if active: raise ValueError('MIDI 存在未结束的音符')
         notes.sort(key=lambda n: (n['start'], n['pitch']))
+        if lyric_events:
+            lyric_tracks.append(dict(index=index,name=track.name or f'音轨 {index+1}',events=lyric_events))
         if not notes: continue
         if len(notes)>5000: raise ValueError('单轨音符超过 5000 个，请分段导入')
         for i, note in enumerate(notes):
@@ -59,9 +63,69 @@ def inspect_midi(path):
                            polyphonic=overlap, count=len(notes), seconds=notes[-1]['end']))
     if not tracks: raise ValueError('MIDI 中没有非打击乐音符')
     bpm=60000000/tempos[0]
-    return dict(tracks=tracks, bpm=bpm,render_bpm=conditioning_bpm(bpm),
+    return dict(tracks=tracks, lyric_tracks=lyric_tracks, bpm=bpm,render_bpm=conditioning_bpm(bpm),
                 tempo_changes=[dict(seconds=clock(t), bpm=60000000/tempos[t]) for t in ticks],
                 warning='速度变化按真实秒数保留；VR 音符类别按初始速度近似量化。' if len(ticks)>1 else None)
+
+
+def embedded_midi_lyrics(info, track_index, lyric_track_index=None):
+    """Use exact MIDI lyric ticks, never infer syllable-to-note allocation."""
+    track=next((t for t in info['tracks'] if t['index']==track_index),None)
+    if track is None or track['polyphonic']:raise ValueError('请选择单声部主旋律轨')
+    sources=info.get('lyric_tracks',[])
+    if not sources:raise ValueError('MIDI 中没有标准 Lyrics 歌词事件；请使用 MIDI＋歌词入口')
+    starts={n['tick']:i for i,n in enumerate(track['notes'])}
+    if lyric_track_index is not None:
+        candidates=[t for t in sources if t['index']==lyric_track_index]
+        if not candidates:raise ValueError('所选歌词音轨不存在')
+    else:
+        candidates=[t for t in sources if t['index']==track_index and any(e['text'].strip() for e in t['events'])]
+        if not candidates:
+            # A separate lyrics track is usable only when every sung event has
+            # an exact note onset. Multiple usable tracks require a selection.
+            candidates=[t for t in sources if any(e['text'].strip() for e in t['events']) and
+                        all(e['tick'] in starts for e in t['events'] if e['text'].strip())]
+        if len(candidates)!=1:
+            raise ValueError('无法唯一确定歌词音轨，请选择对应主旋律的歌词轨；不会自动猜测或移动歌词')
+    source=candidates[0]; labels=['']*len(track['notes']); boundaries=set()
+    for event in source['events']:
+        text=event['text'].strip(); tick=event['tick']
+        if not text and ('\n' in event['text'] or '\r' in event['text']):
+            index=next((i for i,n in enumerate(track['notes']) if n['tick']>=tick),None)
+            if index is not None:boundaries.add(index)
+        if not text:continue
+        if tick not in starts:
+            raise ValueError(f'歌词“{text[:24]}”位于 tick {tick}，未对应所选轨的音符起点；请使用 MIDI＋歌词入口调整')
+        index=starts[tick]
+        if event['text'].startswith(('\n','\r')):boundaries.add(index)
+        if event['text'].endswith(('\n','\r')):boundaries.add(index+1)
+        if labels[index]:raise ValueError(f'第 {index+1} 个音符存在多条歌词事件，请先消除歧义')
+        if len(text)>64:raise ValueError(f'第 {index+1} 个音符的歌词过长（上限 64 字符）')
+        labels[index]=text
+    missing=[str(i+1) for i,s in enumerate(labels) if not s]
+    if missing:
+        raise ValueError(f'有 {len(missing)} 个音符没有歌词（编号 {", ".join(missing[:12])}）；延音请在 MIDI 中标 -，休止标 SP，或使用 MIDI＋歌词入口。不会自动补字。')
+    if not any(s not in ('-','SP','AP') for s in labels):raise ValueError('MIDI 中没有可演唱的歌词')
+    edges=sorted({0,len(labels)}|boundaries)
+    phrases=[dict(id=i,note_start=a,note_end=b) for i,(a,b) in enumerate(zip(edges,edges[1:]))] if boundaries else None
+    return dict(labels=labels,lyric_track=source['index'],phrases=phrases,assignment='exact_midi_tick')
+
+
+def embedded_score(prepared):
+    return prepared.get('mode')=='midi' and prepared.get('lyric_source')=='embedded' and prepared.get('review_required') is False
+
+
+def require_render_confirmation(prepared, request):
+    if embedded_score(prepared):
+        if request.get('labels')!=prepared['labels']:
+            raise ValueError('带歌词 MIDI 直接使用文件内的对应关系；修改歌词请使用 MIDI＋歌词入口')
+    elif request.get('confirmed') is not True:
+        raise ValueError('请先核对歌词对应')
+
+
+def score_phrases(prepared):
+    if embedded_score(prepared):return prepared.get('midi_phrases')
+    return prepared['alignment']['phrases'] if prepared.get('alignment') else None
 
 
 def split_lyrics_text(text):
