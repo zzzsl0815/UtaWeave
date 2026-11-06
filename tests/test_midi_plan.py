@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from song2voice.conditioning import compiled_duration
+from song2voice.conditioning import compiled_duration, NOTE_UNITS
 from song2voice.midi_score import notes_to_score
 from song2voice.rendering.generate import plan
 from song2voice.web.workflow import preview_midi_segments
@@ -99,3 +99,50 @@ class MidiPlanTests(unittest.TestCase):
         notes=[dict(start=1+i,end=1.5+i,pitch=60) for i in range(4)]
         with self.assertRaisesRegex(ValueError,'不重叠'):
             self.make_score(notes,[dict(id=0,note_start=0,note_end=3),dict(id=1,note_start=2,note_end=4)])
+
+    def test_reducing_auto_sp_preserves_exact_clock_and_lyrics(self):
+        notes=[dict(start=1+i*.432,end=1.2+i*.432,pitch=60+i) for i in range(8)]
+        score=self.make_score(notes,[dict(id=0,note_start=0,note_end=8)]);before=deepcopy(score)
+        original=plan(score);connected=plan(score,connect_short_rests=True)
+        a=original['chunks'][0]['annotation'];b=connected['chunks'][0]['annotation']
+        self.assertEqual(len(b['connected_short_rests']),7)
+        self.assertEqual(b['word'].count('SP'),2)
+        self.assertEqual(a['word'].count('SP'),9)
+        self.assertAlmostEqual(compiled_duration(a),compiled_duration(b))
+        self.assertAlmostEqual(sum(a['word_dur']),sum(b['word_dur']))
+        def lyric_onsets(entry):
+            t=0.;seen=set();onsets=[]
+            for token,owner in zip(entry['note'],entry['pitch2word']):
+                if owner not in seen and entry['word'][owner]!='SP':onsets.append(t)
+                seen.add(owner);t+=NOTE_UNITS[token]*60/entry['bpm']
+            return onsets
+        for old,new in zip(lyric_onsets(a),lyric_onsets(b)):self.assertAlmostEqual(old,new)
+        self.assertEqual([x for x in a['word'] if x!='SP'],[x for x in b['word'] if x!='SP'])
+        self.assertEqual(original['chunks'][0]['words'],connected['chunks'][0]['words'])
+        self.assertEqual(score,before)
+        self.assert_limits_and_coverage(connected,notes)
+
+    def test_reduction_preserves_phrase_boundaries_long_pauses_and_explicit_sp(self):
+        notes=[dict(start=t,end=t+.2,pitch=60) for t in (1.,1.43,2.,2.43,2.85,3.1)]
+        phrases=[dict(id=0,note_start=0,note_end=1),dict(id=1,note_start=1,note_end=6)]
+        score=self.make_score(notes,phrases,['ア','ア','ア','SP','ア','ア'])
+        split=plan(score,connect_short_rests=True)
+        # First gap is a lyric boundary; second exceeds 300 ms; the next
+        # interval includes an explicitly silent note; last gap is <75 ms.
+        self.assertEqual(sum(len(c['annotation']['connected_short_rests']) for c in split['chunks']),0)
+
+    def test_no_lrc_keeps_rest_policy_conservative(self):
+        score=self.make_score([dict(start=1+i*.5,end=1.2+i*.5,pitch=60) for i in range(4)])
+        split=plan(score,connect_short_rests=True)
+        self.assertEqual(sum(len(c['annotation']['connected_short_rests']) for c in split['chunks']),0)
+
+    def test_long_phrase_keeps_existing_cuts_and_eight_second_budget(self):
+        notes=[dict(start=1+i*.43,end=1.2+i*.43,pitch=60) for i in range(46)]
+        score=self.make_score(notes,[dict(id=0,note_start=0,note_end=46)])
+        original=plan(score);connected=plan(score,connect_short_rests=True)
+        self.assertGreater(connected['chunk_count'],1)
+        self.assertEqual([c['midi_note_indices'] for c in original['chunks']],
+                         [c['midi_note_indices'] for c in connected['chunks']])
+        self.assertEqual([c['estimated_duration'] for c in original['chunks']],
+                         [c['estimated_duration'] for c in connected['chunks']])
+        self.assert_limits_and_coverage(connected,notes)

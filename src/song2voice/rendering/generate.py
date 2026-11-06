@@ -44,7 +44,7 @@ def progress(out, status, **kw):
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
-def plan(score, maximum=14.5, whole_lines=False, stems=None, source_mode=None):
+def plan(score, maximum=14.5, whole_lines=False, stems=None, source_mode=None, connect_short_rests=False):
     words = []
     for row in score:
         cursor = row['source_window']['start_seconds']
@@ -65,7 +65,7 @@ def plan(score, maximum=14.5, whole_lines=False, stems=None, source_mode=None):
     if source_mode=='midi' or all(row.get('source_mode')=='midi' for row in score):
         from .midi_plan import plan_midi
         seconds=sf.info(stems/'vocal_native.wav').duration if stems is not None else None
-        return plan_midi(score,words,maximum=min(8.,maximum),source_seconds=seconds)
+        return plan_midi(score,words,maximum=min(8.,maximum),source_seconds=seconds,connect_short_rests=connect_short_rests)
     audio, sr = sf.read(stems/'vocal_native.wav', dtype='float32', always_2d=True)
     mono = audio.mean(1); hop = round(.01*sr); count = len(mono)//hop
     rms = np.sqrt(np.mean(mono[:count*hop].reshape(count, hop)**2, axis=1))
@@ -157,7 +157,8 @@ def generate(out, batch_size, whole_lines, target_file, reference_file, checkpoi
     preflight=[dict(item_name=e.get('item_name'),**check_conditioning(e)) for e in score]
     write(out/'score_preflight.json',preflight)
     require_conditioning(score)
-    split = plan(score, whole_lines=whole_lines,stems=stems,source_mode=runtime().get('source_mode'))
+    split = plan(score, whole_lines=whole_lines,stems=stems,source_mode=runtime().get('source_mode'),
+                 connect_short_rests=runtime().get('connect_short_rests',False))
     split['whole_lyric_lines']=whole_lines
     for chunk in split['chunks']:
         chunk['annotation']=compile_chunk_annotation(chunk,score[0]['bpm'])

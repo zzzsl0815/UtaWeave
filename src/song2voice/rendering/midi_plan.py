@@ -19,13 +19,14 @@ def summary(split):
                 max_seconds=split['max_content_seconds'],max_condition_seconds=split['max_condition_seconds'],
                 longest_content_seconds=max(c['content_seconds'] for c in split['chunks']),
                 longest_condition_seconds=max(c['estimated_duration'] for c in split['chunks']),
+                connected_short_rests=sum(len(c['annotation'].get('connected_short_rests',[])) for c in split['chunks']),
                 short_chunk_ids=split['short_chunk_ids'],chunks=[
                     {key:chunk[key] for key in ('id','content_start','content_end','content_seconds',
                                                 'estimated_duration','lyric_phrase_ids','midi_note_indices','kana')}
                     for chunk in split['chunks']])
 
 
-def plan_midi(score, words, maximum=MAX_MIDI_SECONDS, source_seconds=None):
+def plan_midi(score, words, maximum=MAX_MIDI_SECONDS, source_seconds=None, connect_short_rests=False):
     if not math.isfinite(maximum) or maximum<=0:
         raise ValueError('MIDI 每片时长上限必须为正数')
     maximum=min(maximum,MAX_MIDI_SECONDS)
@@ -99,6 +100,7 @@ def plan_midi(score, words, maximum=MAX_MIDI_SECONDS, source_seconds=None):
                    lyric_phrase_ids=sorted({w['phrase_id'] for w in selected if w.get('phrase_id') is not None}),
                    midi_note_indices=[n for w in selected for n in w.get('midi_note_indices',[])],
                    left_boundary=boundary(left),right_boundary=boundary(right))
+        if connect_short_rests:chunk['connect_short_rests']=True
         chunk['annotation']=compile_chunk_annotation(chunk,raw_bpm)
         chunk['estimated_duration']=compiled_duration(chunk['annotation'])
         if not math.isclose(chunk['estimated_duration'],budgets[right],abs_tol=1e-8):

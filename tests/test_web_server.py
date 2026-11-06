@@ -73,6 +73,9 @@ class WebServerTests(unittest.TestCase):
         self.assertLessEqual(result['longest_condition_seconds'],8.)
         self.assertEqual(list(job.iterdir()),[job/'prepared.json'])
         self.assertEqual((job/'prepared.json').read_text(),raw)
+        payload=json.dumps(dict(labels=prepared['labels'],prepared_revision='current',connect_short_rests='false')).encode()
+        with self.assertRaises(HTTPError):
+            urlopen(Request(self.base+'/api/jobs/'+job.name+'/segments',payload,{'X-UtaWeave':'local'}))
 
     def test_worker_surfaces_current_stage_error_and_ignores_stale_runs(self):
         job=self.root/'jobs'/('c'*32);job.mkdir()

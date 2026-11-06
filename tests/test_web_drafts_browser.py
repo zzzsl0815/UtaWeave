@@ -45,6 +45,10 @@ class EditorDraftBrowserTests(unittest.TestCase):
                     self.assertEqual(page.locator('#segment-rows tr').count(),1)
                     self.assertIn('1 段',page.locator('#segment-summary').inner_text())
                     self.assertTrue(page.locator('#segment-rows .romaji-text').inner_text())
+                    page.locator('#connect-short-rests').check()
+                    with page.expect_response('**/segments') as response:
+                        page.locator('#preview-segments').click()
+                    self.assertGreater(response.value.json()['connected_short_rests'],0)
                     page.locator('#note-editor>summary').click();page.locator('#note-0').fill('k')
                     self.assertTrue(page.locator('#segment-result').is_hidden())
                     page.locator('#phrase-review-only').uncheck();page.locator('#phrase-1>summary').click();page.locator('#phrase-reading-1').fill('kimi')
@@ -53,6 +57,7 @@ class EditorDraftBrowserTests(unittest.TestCase):
                     self.assertEqual(page.locator('#note-0').get_attribute('aria-invalid'),'true')
                     self.assertEqual(page.locator('#phrase-reading-1').input_value(),'kimi')
                     self.assertFalse(page.locator('#phrase-review-only').is_checked())
+                    self.assertTrue(page.locator('#connect-short-rests').is_checked())
                     self.assertTrue(page.locator('#phrase-0').is_visible())
                     other=browser.new_page();other.goto(url);other.wait_for_function("document.getElementById('note-0')?.value==='k'")
                     other.locator('#note-editor>summary').click();other.locator('#note-0').fill('oo')

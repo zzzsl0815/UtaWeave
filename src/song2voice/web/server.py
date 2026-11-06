@@ -199,8 +199,9 @@ class Handler(ReportHandler):
                     # Old tabs keep their own branch even after score realignment.
                     self.send_json(save_draft(job,request));return
                 prepared=read(job/'prepared.json');require_score_revision(prepared,request)
+                if type(request.get('connect_short_rests',False)) is not bool:raise ValueError('短休止设置必须为布尔值')
                 if action=='segments':
-                    self.send_json(preview_midi_segments(prepared,request.get('labels')));return
+                    self.send_json(preview_midi_segments(prepared,request.get('labels'),request.get('connect_short_rests',False)));return
                 if action=='align':
                     if alive(job):raise ValueError('任务正在执行，请等待或先停止')
                     if prepared.get('mode')!='midi' or not prepared.get('alignment'):raise ValueError('当前乐谱没有 LRC 分句，请使用带时间戳的歌词重新准备')

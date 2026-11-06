@@ -120,7 +120,7 @@ def rest_tokens(seconds,bpm):
 
 
 def compile_chunk_annotation(chunk,bpm):
-    """Keep every original word and note; replace only outer crop padding."""
+    """Compile the score clock; optionally turn short automatic MIDI rests into sustains."""
     source_bpm=bpm;bpm=conditioning_bpm(bpm)
     entry=dict(item_name=chunk['id'],word=[],word_dur=[],pitch=[],pitch_dur=[],note=[],pitch2word=[],bpm=bpm,source_bpm=source_bpm,has_score=True)
     def rest(seconds):
@@ -130,17 +130,43 @@ def compile_chunk_annotation(chunk,bpm):
         for token in tokens:
             entry['pitch'].append(0);entry['note'].append(token);entry['pitch2word'].append(owner)
             entry['pitch_dur'].append(seconds*NOTE_UNITS[token]/total)
-    rest(.25);cursor=chunk['content_start']
+    connected=[]
+    def sustain(seconds):
+        # Reassign the rest's exact token budget to the preceding sung pitch.
+        # Coalesce equal-pitch tokens without changing total conditioned time.
+        owner=len(entry['word'])-1
+        pitch=entry['pitch'].pop();duration=entry['pitch_dur'].pop()+seconds
+        units=NOTE_UNITS[entry['note'].pop()]+sum(NOTE_UNITS[t] for t in rest_tokens(seconds,bpm))
+        entry['pitch2word'].pop()
+        tokens=rest_tokens(units*60/bpm,bpm)
+        if not math.isclose(sum(NOTE_UNITS[t] for t in tokens),units,abs_tol=1e-9):
+            raise ValueError('Connected MIDI rest changed the conditioning clock')
+        entry['word_dur'][owner]+=seconds
+        for token in tokens:
+            entry['pitch'].append(pitch);entry['note'].append(token);entry['pitch2word'].append(owner)
+            entry['pitch_dur'].append(duration*NOTE_UNITS[token]/units)
+    rest(.25);cursor=chunk['content_start'];previous=None
     for word in chunk['words']:
         gap=word['start']-cursor
-        if gap>=.075:rest(gap)
+        if gap>=.075:
+            connect=(chunk.get('connect_short_rests') is True and gap<=.3 and previous is not None
+                and previous.get('phrase_id') is not None and previous.get('phrase_id')==word.get('phrase_id')
+                and previous.get('midi_note_indices') and word.get('midi_note_indices')
+                and previous['midi_note_indices'][-1]+1==word['midi_note_indices'][0]
+                and previous['pitch'][-1]>0)
+            if connect:
+                sustain(gap)
+                connected.append(dict(after_note=previous['midi_note_indices'][-1],before_note=word['midi_note_indices'][0],seconds=gap))
+            else:rest(gap)
         owner=len(entry['word']);entry['word'].append(word['word'])
         entry['word_dur'].append(word['end']-word['start'])
         entry['pitch'].extend(word['pitch'])
         entry['note'].extend(word['note'] if bpm==source_bpm else [quantize_duration(d,bpm) for d in word['pitch_dur']])
         entry['pitch_dur'].extend(word['pitch_dur']);entry['pitch2word'].extend([owner]*len(word['pitch']))
-        cursor=word['end']
+        cursor=word['end'];previous=word
     rest(.4)
+    if chunk.get('connect_short_rests') is True:
+        entry['connected_short_rests']=connected
     expected=[w['word'] for w in chunk['words']]
     if [w for w in entry['word'] if w not in REST_WORDS]!=expected:
         raise ValueError('Chunk compilation changed lyric unit identity or order')

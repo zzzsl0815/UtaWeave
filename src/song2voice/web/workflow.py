@@ -198,7 +198,7 @@ def require_score_revision(prepared,request):
         raise ValueError('乐谱已重新准备，当前页面的草稿版本过期。请刷新页面并核对新草稿后再提交。')
 
 
-def preview_midi_segments(prepared, labels):
+def preview_midi_segments(prepared, labels, connect_short_rests=False):
     """Timing-only preview. Placeholder phones never leave this CPU calculation."""
     from ..rendering.generate import plan
     from ..rendering.midi_plan import summary
@@ -207,7 +207,8 @@ def preview_midi_segments(prepared, labels):
         raise ValueError('请先补齐音符读音，再预览切分')
     score,_=notes_to_score(prepared['notes'],labels,{label:['a'] for label in labels},prepared['bpm'],
                           phrases=prepared.get('alignment',{}).get('phrases') if prepared.get('alignment') else None)
-    return dict(summary(plan(score)),prepared_revision=prepared['revision'])
+    if type(connect_short_rests) is not bool:raise ValueError('短休止设置必须为布尔值')
+    return dict(summary(plan(score,connect_short_rests=connect_short_rests)),prepared_revision=prepared['revision'])
 
 
 def realign(cfg,job,request):
@@ -296,10 +297,13 @@ def render(cfg,job,request):
         score=edit_score(read(job/'annotation/score.vr.json'),labels,phones)
         stems=job/'source-stems/stems';runtime['source_mode']='song'
     require_conditioning(score)
-    split=plan(score,whole_lines=True,stems=stems)
+    runtime['connect_short_rests']=request.get('connect_short_rests',False) if prepared['mode']=='midi' else False
+    split=plan(score,whole_lines=True,stems=stems,connect_short_rests=runtime['connect_short_rests'])
     for chunk in split['chunks']:compiled_duration(compile_chunk_annotation(chunk,score[0]['bpm']))
     atomic_json(job/'score.vr.json',score)
     atomic_json(job/'score-check.json',dict(chunks=split['chunk_count'],lyric_units=split['lyric_unit_count'],
+        connect_short_rests=runtime['connect_short_rests'],
+        connected_short_rests=sum(len(c['annotation'].get('connected_short_rests',[])) for c in split['chunks']),
         planner=split.get('planner','audio_pauses'),max_content_seconds=split['max_content_seconds'],
         longest_content_seconds=max(c['content_seconds'] for c in split['chunks']),
         longest_condition_seconds=max(compiled_duration(compile_chunk_annotation(c,score[0]['bpm'])) for c in split['chunks'])))

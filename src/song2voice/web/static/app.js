@@ -170,6 +170,7 @@ function showPrepared(data, saved, draft=null) {
   readingEditors=[];
   prepared=data;labels=[...(draft?.labels||(saved&&(!data.revision||saved.prepared_revision===data.revision)?saved.labels:data.labels))];setMode(data.mode);
   $('segment-panel').hidden=data.mode!=='midi';$('segment-result').hidden=true;
+  $('connect-short-rests').checked=draft?(draft.fields?.['connect-short-rests']??$('connect-short-rests').checked):Boolean(saved?.connect_short_rests);
   if(draft){readingInputMode=draft.reading_mode;phraseJob=current;phraseDrafts=new Map(draft.phrase_drafts);}
   $('reading-input-mode').value=readingInputMode;readingInputHelp();
   $('input-panel').hidden=true;$('review-panel').hidden=false;$('voice-panel').hidden=false;
@@ -215,11 +216,11 @@ $('new-input').addEventListener('click',()=>{$('input-panel').hidden=false;$('in
 $('export-midi').onclick=()=>action(async()=>{requireNoteReadings();saveEditorDraft();const data=await api(`/api/jobs/${current}/midi`,{labels,prepared_revision:prepared.revision});const a=document.createElement('a');a.href=data.url;a.download='lyrics.mid';a.click();if(phraseDrafts.size)notice(`已按当前逐音符歌词导出。${phraseDrafts.size} 句整句读音草稿尚未应用，不影响已手动调整的音符。`);},$('export-midi'));
 $('preview-segments').onclick=()=>action(async()=>{
   requireNoteReadings();saveEditorDraft();
-  const job=current,revision=prepared.revision,input=JSON.stringify(labels);
-  const data=await api(`/api/jobs/${job}/segments`,{labels,prepared_revision:revision});
-  if(current!==job||prepared.revision!==revision||JSON.stringify(labels)!==input)throw Error('读音或乐谱已变化，请重新预览切分。');
+  const job=current,revision=prepared.revision,input=JSON.stringify(labels),connect=$('connect-short-rests').checked;
+  const data=await api(`/api/jobs/${job}/segments`,{labels,prepared_revision:revision,connect_short_rests:connect});
+  if(current!==job||prepared.revision!==revision||JSON.stringify(labels)!==input||$('connect-short-rests').checked!==connect)throw Error('读音、乐谱或休止设置已变化，请重新预览切分。');
   $('segment-result').hidden=false;$('segment-rows').replaceChildren();
-  $('segment-summary').textContent=`${data.chunk_count} 段 · 最长演唱跨度 ${data.longest_content_seconds.toFixed(2)} 秒 · 含首尾留白的模型条件最长 ${data.longest_condition_seconds.toFixed(2)} 秒 · ${data.short_chunk_ids.length} 段不足 2 秒`;
+  $('segment-summary').textContent=`${data.chunk_count} 段 · 最长演唱跨度 ${data.longest_content_seconds.toFixed(2)} 秒 · 含首尾留白的模型条件最长 ${data.longest_condition_seconds.toFixed(2)} 秒 · ${data.short_chunk_ids.length} 段不足 2 秒 · ${data.connected_short_rests||0} 处句内短休止转为前音延续`;
   for(const c of data.chunks){
     const row=element('tr');for(const text of [Number(c.id.slice(6))+1,`${format(c.content_start)}–${format(c.content_end)}`,c.content_seconds.toFixed(2)+' s',c.estimated_duration.toFixed(2)+' s',c.lyric_phrase_ids.map(i=>i+1).join('、')||'按音符停顿'])row.append(element('td',text));
     const reading=element('td',c.kana),romaji=element('span',undefined,'romaji-text');showRomaji(romaji,c.kana);reading.append(romaji);row.append(reading);$('segment-rows').append(row);
@@ -236,7 +237,7 @@ $('render').addEventListener('click',()=>action(async()=>{
   const reference={mode:$('reference-mode').value,asset:uploads.reference,url:$('reference-url').value.trim()};
   if(['clip','audio'].includes(reference.mode)&&!reference.asset)throw Error('请上传音色参考。');
   if(reference.mode==='netease'&&!reference.url)throw Error('请填写目标音色歌曲链接。');
-  await api(`/api/jobs/${current}/render`,{labels,prepared_revision:prepared.revision,confirmed:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value)});
+  await api(`/api/jobs/${current}/render`,{labels,prepared_revision:prepared.revision,confirmed:true,reference,steps:Number($('seed-steps').value),cfg:Number($('seed-cfg').value),connect_short_rests:prepared.mode==='midi'&&$('connect-short-rests').checked});
   $('result-panel').hidden=true;await poll();
 },$('render')));
 function updateTask(state) {
